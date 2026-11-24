@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>尾盘决策 · 主升浪分析台</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='mainwave_intraday.css') }}">
+</head>
+<body>
+{% macro num(value, suffix='') -%}{{ ('%.2f'|format(value)) ~ suffix if value is not none else '--' }}{%- endmacro %}
+{% set pool_labels = {'POTENTIAL': '在池观察', 'ACTIVE': '在池观察', 'RISK': '风险观察', 'RISK_WATCH': '风险观察', 'EXITED': '已退出', 'AVAILABLE': '资料可用', 'COMPLETE': '资料完整', 'PARTIAL': '资料不完整', 'DATA_WAIT': '等待数据', 'UNAVAILABLE': '资料未取得'} %}
+{% set selection_labels = {'DATA_WAIT': '等待数据', 'RISK_WATCH': '风险观察', 'WAIT_CONFIRMATION': '等待承接确认', 'MARKET_WAIT': '市场限制，保留观察', 'SETUP_REVIEW': '形态条件复核'} %}
+{% macro pool_table(rows) -%}
+<div class="table-wrap"><table><thead><tr><th>股票 / 题材</th><th>池状态 / 首次入池</th><th>评分 / 入池线索</th><th>收盘价 / EMA10</th><th>换手 / 相对换手 / 相对量</th><th>60日位置</th><th>证据与风险</th></tr></thead><tbody>
+{% for c in rows %}{% set m = c.get('metrics') or {} %}{% set entry = c.get('entry') or {} %}
+<tr><td><strong>{{ c.get('name') or c.symbol }}</strong><small>{{ c.symbol }}</small><small>{{ c.get('theme') or '未归类' }}</small></td><td>{{ pool_labels.get(c.get('state'), c.get('state') or '状态未取得') }}<small>{{ c.get('first_seen') or '--' }}</small></td><td>{{ num(c.get('score')) }}<small>{{ '前期池成员' if c.get('prior_member') else '非前期池成员' }}</small><small>点火加分 {{ num(c.get('ignition_bonus')) }}</small><small>{% if entry.get('ignition') %}点火 {% endif %}{% if entry.get('pullback') %}回踩 {% endif %}{% if entry.get('combined') %}组合条件{% endif %}{% if not (entry.get('ignition') or entry.get('pullback') or entry.get('combined')) %}暂无确认买点{% endif %}</small></td><td>{{ num(m.get('close')) }}<small>EMA10 {{ num(m.get('ema10')) }}</small></td><td>{{ num(m.get('turnover'), '%') }}<small>相对换手 {{ num(m.get('relative_turnover')) }}</small><small>相对量 {{ num(m.get('relative_volume')) }}</small></td><td>{{ num(m.get('position60')) }}</td><td class="explanation">{% for item in c.get('evidence', []) %}<small>{{ item }}</small>{% endfor %}{% for item in c.get('risk_flags', []) %}<small class="issue">{{ item }}</small>{% endfor %}{% for item in c.get('missing', []) %}<small>{{ item }}</small>{% endfor %}{% if c.get('exit_reason') %}<small>{{ c.exit_reason }}</small>{% endif %}</td></tr>
+{% else %}<tr><td colspan="7">尚无已完成收盘的潜在标的池资料</td></tr>{% endfor %}
+</tbody></table></div>
+{%- endmacro %}
+{% macro selection_table(rows, live) -%}
+<div class="table-wrap"><table><thead><tr><th>股票 / 题材 / 路径</th><th>独立策略</th><th>当前判断</th><th>参考价 / EMA10 / 下影比例</th><th>池成员 / 加分 / 评分</th><th>依据与待满足条件</th></tr></thead><tbody>
+{% for c in rows %}{% set routes = c.get('route_ids') or [] %}
+<tr><td><strong>{{ c.get('name') or c.symbol }}</strong><small>{{ c.symbol }} · {{ c.get('theme') or '未归类' }}</small><small>{{ routes if routes is string else routes|join(' / ') or '路径待归属' }}</small></td><td>{% for strategy in c.get('strategies', []) %}<small>{{ strategy }}</small>{% else %}--{% endfor %}</td><td>{{ '历史形态记录，复核无效' if not live and c.get('status') == 'SETUP_REVIEW' else selection_labels.get(c.get('status'), c.get('status') or '等待数据') }}{% if live and c.get('paper_review_eligible') %}<small class="eligible">可人工复核模拟参与</small>{% endif %}</td><td>{{ num(c.get('price')) }}<small>EMA10 {{ num(c.get('ema10')) }}</small><small>下影比例 {{ num(c.get('lower_wick_ratio')) }}</small></td><td>{{ '池内成员' if c.get('pool_member') else '非池内成员' }}<small>池加分 {{ num(c.get('pool_bonus')) }}</small><small>评分 {{ num(c.get('score')) }}</small></td><td class="explanation">{% for reason in c.get('reasons', []) %}<small>{{ reason }}</small>{% endfor %}{% if c.get('blockers') %}<details><summary>尚缺 {{ c.blockers|length }} 项</summary>{% for block in c.blockers %}<p>{{ block }}</p>{% endfor %}</details>{% endif %}</td></tr>
+{% else %}<tr><td colspan="6">尚无独立尾盘策略记录，等待数据与条件核验</td></tr>{% endfor %}
+</tbody></table></div>
+{%- endmacro %}
+<header>
+  <div><a href="/">主升浪全周期分析台</a><h1>尾盘决策</h1></div>
+  <form><label for="date">行情日期</label><input id="date" type="date" name="date" value="{{ data.as_of }}"><button type="submit" title="重新读取已生成的盘中结果">读取结果</button></form>
+</header>
+<main data-valid-until="{{ data.report.get('valid_until', '') }}" data-live="{{ 'true' if data.mode == 'INTRADAY_PROVISIONAL' else 'false' }}">
+  <div class="notice {{ 'live' if data.mode == 'INTRADAY_PROVISIONAL' else '' }}"><strong>{{ data.mode_label }}</strong>
+  {% if data.report %}<span>观测 {{ data.report.observed_at }} · 有效期 {{ data.report.get('valid_until', '未记录') }}</span>{% endif %}</div>
+  {% set r = data.report %}
+  {% if r %}
+  <div class="totals"><span>决策数据状态 <b>{{ r.summary.status|intraday_label }}</b></span><span>采集时有效报价 <b>{{ data.collection.prices }} / {{ data.collection.requested }}</b></span><span>全天累计快照 <b>{{ data.collection.full }}</b></span><span>虚拟持仓 <b>{{ r.summary.holdings }}</b></span></div>
+  {% endif %}
+  <nav aria-label="尾盘决策分区"><a href="#price-review">价格级评估</a><a href="#market">完整行情核验</a><a href="#holdings">持仓决策</a><a href="#candidates">潜力标的</a><a href="#potential-pool">潜在标的池</a><a href="#tail-selection">独立尾盘策略</a><a href="#tail-observation">龙头与1进2观察</a></nav>
+  {% if r %}
+  <section id="collection"><div class="section-heading"><h2>本轮采集状态</h2><strong>{{ '历史采集记录' if data.mode != 'INTRADAY_PROVISIONAL' else '采集时点 ' ~ r.observed_at }}</strong></div>
+    <div class="totals"><span>仅分钟参考价 <b>{{ data.collection.price_only }}</b></span><span>未取得有效报价 <b>{{ data.collection.missing }}</b></span><span>持仓报价 <b>{{ data.collection.holding_prices }} / {{ data.collection.holdings }}</b></span><span>指数报价 <b>{{ data.collection.indices }} / 4</b></span><span>完整分钟轨迹 <b>{{ r.summary.complete_minutes }} / {{ r.summary.required_minutes }}</b></span></div>
+    {% if data.collection.rate_limited %}<p class="issue">本轮触发分钟接口限频，采集不完整；不能据此判断没有机会。</p>{% endif %}
+    {% if data.collection.daily_quota_exhausted %}<p class="issue">接口当日调用额度已耗尽；等待一分钟不能恢复，当前权限不足以支持持续刷新。</p>{% endif %}
+    {% if data.collection.price_only and not data.collection.full %}<p class="issue">已取得分钟价格，但没有全天累计OHLC及量额。可查看价格级评估；量价承接与买卖确认仍待补充数据。</p>{% endif %}
+    {% if data.collection.indices < 4 %}<p class="issue">实时指数不足，市场风险无法完整核验，新增参与复核保持关闭。</p>{% endif %}
+    {% if data.mode != 'INTRADAY_PROVISIONAL' %}<p class="issue">以下是本轮采集时的历史价格，不是当前实时行情。</p>{% endif %}
+    {% if data.price_samples %}<h3>本轮价格记录 · 样例，不是候选排名</h3>
+    <div class="table-wrap"><table><thead><tr><th>股票</th><th>参考价</th><th>数据时间</th><th>数据类型</th></tr></thead><tbody>
+    {% for c in data.price_samples %}<tr><td><strong>{{ c.name or c.symbol }}</strong><small>{{ c.symbol }}</small></td><td>{{ num(c.quote.close) }}</td><td>{{ c.quote.observed_at }}</td><td>{{ '最新分钟价格，非全天OHLC' if c.quote.quality == 'PRICE_ONLY' else '全天累计快照' }}</td></tr>{% endfor %}
+    </tbody></table></div>{% endif %}
+  </section>
+  {% endif %}
+  {% set p = r.get('price_review') or {} %}
+  {% if p %}{% set pm = p.market %}{% set pc = p.previous_boards %}
+  <section id="price-review"><div class="section-heading"><h2>价格级评估</h2><strong class="price-mode">{{ '当前价格观察，非买入许可' if data.mode == 'INTRADAY_PROVISIONAL' and p.mode != 'STALE' else '历史价格观察，已过期，非当前建议' }}</strong></div>
+    <p class="muted">{{ p.notice }}</p>
+    <div class="totals"><span>参照价核验覆盖 <b>{{ pm.covered }} / {{ pm.requested }}</b></span><span>{{ pm.reading }}</span><span>上涨 / 下跌 / 平盘 <b>{{ pm.up }} / {{ pm.down }} / {{ pm.flat }}</b></span><span>中位涨幅 <b>{{ num(pm.median_pct, '%') }}</b></span><span>前收盘环境 <b>{{ pm.prior_context or '未知' }}</b></span></div>
+    <p class="muted">{{ '实时指数已取得，完整风控见下方核验区。' if pm.indices_complete else '实时指数缺失；以上是股票样本价格宽度，不是指数涨跌，也不解除原市场限制。' }}</p>
+    <h3>题材价格强弱</h3>
+    <div class="table-wrap"><table><thead><tr><th>题材</th><th>价格状态</th><th>有效 / 域内成员</th><th>中位涨幅</th><th>相对市场中位数</th><th>上涨占比</th><th>价格前排</th></tr></thead><tbody>
+    {% for t in p.themes.records[:10] %}<tr><td>{{ t.name }}</td><td>{{ t.state|intraday_label }}</td><td>{{ t.fresh_members }} / {{ t.members }}</td><td>{{ num(t.median_pct, '%') }}</td><td>{{ num(t.relative_market_pp, 'pp') }}</td><td>{{ num(t.advance_ratio * 100 if t.advance_ratio is not none else none, '%') }}</td><td class="price-leaders">{% for l in t.leaders %}<small>{{ l.name or l.symbol }} {{ num(l.pct_chg, '%') }}</small>{% endfor %}</td></tr>{% else %}<tr><td colspan="7">题材分类或可比价格不足</td></tr>{% endfor %}
+    </tbody></table></div>
+    <h3>昨日涨停母池的当前表现</h3>
+    <div class="totals"><span>母池日期 <b>{{ pc.previous_day or '--' }}</b></span><span>可比 / 母池 <b>{{ pc.covered }} / {{ pc.total if pc.total is not none else '--' }}</b></span><span>均值 / 中位数 <b>{{ num(pc.mean_pct, '%') }} / {{ num(pc.median_pct, '%') }}</b></span><span>上涨比例 <b>{{ num(pc.positive_ratio * 100 if pc.positive_ratio is not none else none, '%') }}</b></span><span>现价处于涨停价 <b>{{ pc.at_limit }} 只</b></span></div>
+    <p class="muted">{{ '昨日母池完整。' if pc.mother_pool_complete else '昨日母池不完整或未取得，不能推断全体表现。' }}仅价格表现，不是可成交收益；现价处于涨停价不等于封板、晋级或回封成功。</p>
+    <h3>持仓价格与原风险边界</h3>
+    <div class="table-wrap"><table><thead><tr><th>股票</th><th>现价 / 涨跌幅</th><th>硬底线 / 收盘保护</th><th>距硬底线</th><th>EMA20偏离</th><th>价格观察</th></tr></thead><tbody>
+    {% for h in p.holdings %}<tr><td><strong>{{ h.name or h.symbol }}</strong><small>{{ h.symbol }}</small></td><td>{{ num(h.price) }}<small>{{ num(h.pct_chg, '%') }}</small></td><td>{{ num(h.hard_floor) }} / {{ num(h.soft_floor) }}</td><td>{{ num(h.hard_distance_pct, '%') }}</td><td>{{ num(h.ema20_bias_pct, '%') }}</td><td class="explanation">{{ h.reading }}{% if h.t1_locked %}<small class="issue">T+1：当日买入不可卖</small>{% endif %}</td></tr>{% else %}<tr><td colspan="6">暂无虚拟持仓</td></tr>{% endfor %}
+    </tbody></table></div>
+    <h3>价格观察名单 · {{ p.candidates|length }}只，非买入推荐</h3>
+    <div class="table-wrap"><table><thead><tr><th>股票 / 题材</th><th>原路径 / 前收盘阶段</th><th>现价 / 涨跌幅</th><th>EMA10距离 / EMA20偏离</th><th>观察区间 / 失效价</th><th>依据</th></tr></thead><tbody>
+    {% for c in p.candidates %}<tr><td><strong>{{ c.name or c.symbol }}</strong><small>{{ c.symbol }} · {{ c.theme or '未归类' }}</small></td><td>{{ c.route_ids or '仅价格线索，路径待核' }}<small>{{ c.lifecycle or '阶段未确认' }}</small></td><td>{{ num(c.price) }}<small>{{ num(c.pct_chg, '%') }}</small></td><td>{{ num(c.ema10_distance_atr, ' ATR') }}<small>{{ num(c.ema20_bias_pct, '%') }}</small></td><td>{{ num(c.review_lower) }} ~ {{ num(c.review_upper) }}<small>失效 {{ num(c.invalid) }}</small></td><td class="explanation">{{ c.reading }}<small>缺量能、全天形态和承接确认；不能据此执行交易。</small></td></tr>{% else %}<tr><td colspan="6">暂无通过价格、位置与原风险筛查的观察标的，不强凑数量</td></tr>{% endfor %}
+    </tbody></table></div>
+    <p class="muted">{{ p.ranking_method }}</p>
+  </section>
+  {% endif %}
+  <section id="market"><div class="section-heading"><h2>01 行情与风险</h2>{% if r %}<strong>{{ r.market.state|intraday_label }}</strong>{% endif %}</div>
+  {% if r %}
+    <div class="totals"><span>快照覆盖 <b>{{ num(r.market.snapshot_coverage * 100, '%') }}</b></span><span>上涨占比 <b>{{ num(r.market.advance_ratio * 100 if r.market.advance_ratio is not none else none, '%') }}</b></span><span>新增条件复核 <b>{{ '开放' if r.market.new_review_allowed else '关闭' }}</b></span></div>
+    <div class="table-wrap"><table><thead><tr><th>指数</th><th>涨跌幅</th><th>距日内高点</th><th>行情时间</th></tr></thead><tbody>
+    {% for idx in r.market.get('indices', []) %}<tr><td>{{ idx.name }}</td><td>{{ num(idx.pct_chg, '%') }}</td><td>{{ num(idx.drawdown_pct, '%') }}</td><td>{{ idx.observed_at or '缺失' }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    <h3>实时题材价格热度</h3>
+    <div class="table-wrap"><table><thead><tr><th>题材</th><th>状态</th><th>有效 / 成员</th><th>中位涨幅</th><th>强于市场</th><th>上涨占比</th><th>VWAP上方占比</th><th>累计成交额</th><th>活跃成员</th></tr></thead><tbody>
+    {% for t in r.get('themes', {}).get('records', []) %}<tr><td>{{ t.name }}</td><td>{{ t.state|intraday_label }}</td><td>{{ t.fresh_members }} / {{ t.members }}</td><td>{{ num(t.median_pct, '%') }}</td><td>{{ num(t.relative_market_pp, 'pp') }}</td><td>{{ num(t.advance_ratio * 100 if t.advance_ratio is not none else none, '%') }}</td><td>{{ num(t.above_vwap_ratio * 100 if t.above_vwap_ratio is not none else none, '%') }}</td><td>{{ num(t.amount_yi, '亿') }}</td><td>{% for leader in t.leaders %}<small>{{ leader.name or leader.symbol }} {{ num(leader.pct_chg, '%') }}</small>{% endfor %}</td></tr>{% else %}<tr><td colspan="9">缺少可核验的实时题材数据</td></tr>{% endfor %}
+    </tbody></table></div>
+    <p class="muted">成分股价格热度，不代表新闻热搜或资金净流入。题材成员快照：{{ r.get('themes', {}).get('membership', {}).get('as_of', '未取得') }}。重叠题材成交额不可相加。</p>
+  {% else %}<p class="empty">暂无盘中指数及题材快照</p>{% endif %}
+  </section>
+  <section id="holdings"><div class="section-heading"><h2>02 已有持仓决策</h2><a href="/">虚拟持仓与收盘分析</a></div>
+    <div class="table-wrap"><table><thead><tr><th>股票</th><th>判断</th><th>现价</th><th>固定硬底线</th><th>收盘保护位</th><th>实时题材</th><th>决策依据</th></tr></thead><tbody>
+    {% for h in r.get('holdings', []) %}<tr><td><strong>{{ h.name }}</strong><small>{{ h.symbol }}</small></td><td>{{ h.status|intraday_label }}{% if h.status == 'T1_LOCKED' %}<small>待处置：{{ h.get('pending_action', '')|intraday_label }}</small>{% endif %}</td><td>{{ num(h.get('latest_price')) }}</td><td>{{ num(h.get('hard_floor')) }}</td><td>{{ num(h.get('soft_floor')) }}</td><td>{{ (h.get('live_theme') or {}).get('name', '--') }}</td><td class="explanation">{{ h.reason }}{% for alert in h.get('context_alerts', []) %}<small>{{ alert }}</small>{% endfor %}</td></tr>{% else %}<tr><td colspan="7">{{ '暂无虚拟持仓' if r else '等待当日盘中持仓复核' }}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+  <section id="candidates"><div class="section-heading"><h2>03 潜力标的选择</h2><strong>{% if r %}模拟参与复核 {{ r.get('summary', {}).get('paper_reviews', 0) }} 只{% else %}尚未评估{% endif %}</strong></div>
+    <div class="table-wrap"><table><thead><tr><th>股票 / 路径</th><th>前收盘阶段</th><th>实时题材</th><th>当前判断</th><th>现价 / 介入区间</th><th>相对指数</th><th>换手率估计 / EMA20偏离</th><th>依据与待满足条件</th></tr></thead><tbody>
+    {% for c in r.get('records', []) %}<tr><td><strong>{{ c.name }}</strong><small>{{ c.symbol }} · {{ c.route_ids or '尚未归入三路径' }}</small></td><td>{{ c.prior_lifecycle or '--' }}<small>{{ c.lifecycle_as_of }}</small></td><td>{{ c.theme or '未归类' }}</td><td>{{ c.status|intraday_label }}{% if c.paper_review_eligible %}<small class="eligible">可人工复核模拟参与</small>{% endif %}</td><td>{{ num((c.quote or {}).get('close')) }}<small>{{ num(c.get('review_lower')) }} ~ {{ num(c.get('review_upper')) }}</small><small>失效 {{ num(c.get('invalid')) }}</small></td><td>{{ num(c.relative_index_pp, 'pp') }}</td><td>{{ num(c.metrics.get('turnover_pct_estimate'), '%') }}<small>{{ num(c.metrics.get('ema20_bias_pct'), '%') }}</small></td><td class="explanation">{% for reason in c.reasons %}<small>{{ reason }}</small>{% endfor %}{% if c.blockers %}<details><summary>尚缺 {{ c.blockers|length }} 项</summary>{% for block in c.blockers %}<p>{{ block }}</p>{% endfor %}</details>{% endif %}</td></tr>{% else %}<tr><td colspan="8">{{ '本轮无有效重点名单，需结合数据状态判断；不强凑数量' if r else '等待盘中扫描，尚不能判断是否有合格标的' }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    <p class="muted">重点观察不等于买入。盘中不自动交易、不修改持仓；虚拟持仓仍由人工在收盘后以正式收盘价添加。</p>
+  </section>
+  {% set pool = data.get('potential_pool') or {} %}
+  {% set pool_summary = pool.get('summary') or {} %}
+  {% set pool_rows = (pool.get('records') or [])[:50] %}
+  <section id="potential-pool"><div class="section-heading"><h2>04 潜在标的池</h2><strong>已完成收盘的历史池，非实时</strong></div>
+    <div class="totals"><span>收盘资料日期 <b>{{ pool.get('as_of') or '--' }}</b></span><span>资料状态 <b>{{ pool_labels.get(pool.get('status'), pool.get('status') or '资料未取得') }}</b></span><span>在池 <b>{{ pool_summary.get('active', '--') }}</b></span><span>风险 <b>{{ pool_summary.get('risk', '--') }}</b></span><span>已退出 <b>{{ pool_summary.get('exited', '--') }}</b></span><span>扫描范围 <b>{{ pool_summary.get('universe', '--') }}</b></span><span>有效基线 <b>{{ pool_summary.get('ready', '--') }}</b></span></div>
+    <p class="muted">{{ pool.get('notice') or '最近已完成收盘的历史观察资料，不是盘中买入名单。' }}</p>
+    <p class="muted">仅展示前50条，本次 {{ pool_rows|length }} 条；前20条展开。{% if pool.get('as_of') %}<a href="/api/potential-pool?date={{ pool.as_of|urlencode }}" download>下载全量JSON（{{ pool.as_of }}）</a>{% endif %}</p>
+    {{ pool_table(pool_rows[:20]) }}
+    {% if pool_rows|length > 20 %}<details><summary>其余 {{ pool_rows|length - 20 }} 条历史池记录</summary>{{ pool_table(pool_rows[20:]) }}</details>{% endif %}
+  </section>
+  {% set selection = data.get('tail_selection') or {} %}
+  {% set selection_summary = selection.get('summary') or {} %}
+  {% set selection_rows = (selection.get('records') or [])[:15] %}
+  {% set selection_live = selection and data.mode == 'INTRADAY_PROVISIONAL' and selection.get('mode', data.mode) == 'INTRADAY_PROVISIONAL' %}
+  <section id="tail-selection"><div class="section-heading"><h2>05 独立尾盘策略</h2><strong class="selection-mode">{{ '盘中条件复核，不自动交易' if selection_live else '历史观察，非当前复核' if selection else '尚未评估' }}</strong></div>
+    <div class="totals"><span>评估日期 <b>{{ selection.get('as_of') or '--' }}</b></span><span>重点观察 <b class="selection-focus">{{ selection_summary.get('focus', 0) }}</b></span><span>有效模拟复核 <b class="selection-reviews">{{ selection_summary.get('reviews', 0) if selection_live else 0 }}</b></span></div>
+    <p class="muted selection-notice">{{ selection.get('notice') or '独立尾盘策略仅供人工核验，不生成订单或自动交易。' }}</p>
+    <p class="muted">最多展示15条，前5条重点记录展开；历史记录不具备当前复核资格。</p>
+    {{ selection_table(selection_rows[:5], selection_live) }}
+    {% if selection_rows|length > 5 %}<details class="selection-more"><summary>其余 {{ selection_rows|length - 5 }} 条策略观察记录</summary>{{ selection_table(selection_rows[5:], selection_live) }}</details>{% endif %}
+  </section>
+  {% set obs = data.get('tail_observation', {}) %}
+  <section id="tail-observation"><div class="section-heading"><h2>06 龙头与1进2观察</h2><strong class="observation-mode">{{ '历史观察，非当前判断' if obs.get('mode') == 'STALE' else '收盘资料，等待盘中确认' if obs.get('mode') == 'REFERENCE_ONLY' else '影子观察，不开放买入' }}</strong></div>
+    <div class="totals"><span>资料日期 <b>{{ obs.get('previous_day') or '--' }}</b></span><span>首板母池 <b>{{ obs.get('summary', {}).get('prior_first_boards') if obs.get('summary', {}).get('prior_first_boards') is not none else '未完整取得' }}</b></span><span>昨日涨停资料 <b>{{ obs.get('source_status', {}).get('boards', 'UNAVAILABLE')|intraday_label }}</b></span><span>当日涨停价 <b>{{ obs.get('source_status', {}).get('limits', 'UNAVAILABLE')|intraday_label }}</b></span></div>
+    <h3>龙头角色证据 · {{ obs.get('leaders', [])|length }}只，前10只</h3>
+    <div class="table-wrap"><table><thead><tr><th>股票 / 发现路径</th><th>角色 / 前收盘阶段</th><th>现价 / 相对指数</th><th>证据</th><th>待核实</th></tr></thead><tbody>
+    {% for c in obs.get('leaders', [])[:10] %}<tr><td><strong>{{ c.name or c.symbol }}</strong><small>{{ c.symbol }} · {{ c.route_ids or '路径待归属' }}</small></td><td>{{ c.state|intraday_label }}<small>{{ c.lifecycle or '阶段未取得' }} · {{ c.lifecycle_as_of or obs.previous_day }}</small>{% if c.risk_watch %}<small class="issue">价格 / 结构风险观察</small>{% endif %}</td><td>{{ num(c.price) }}<small>{{ num(c.relative_index_pp, 'pp') }}</small><small>{{ c.quote_at or '无当前报价' }}</small></td><td class="explanation">{% for item in c.evidence %}<small>{{ item }}</small>{% endfor %}</td><td class="explanation">{% for item in c.missing %}<small>{{ item }}</small>{% endfor %}</td></tr>{% else %}<tr><td colspan="5">暂无可核验的领头角色资料</td></tr>{% endfor %}
+    </tbody></table></div>
+    {% for group, title in [('TODAY_PROMOTION', '今日晋级观察：昨日首板'), ('NEXT_SESSION_PREP', '次日预备：今日触板，收盘待确认'), ('ARCHIVE', '历史首板档案：等待当日扫描')] %}
+    {% set rows = obs.get('boards', [])|selectattr('group', 'equalto', group)|list %}
+    {% if group != 'ARCHIVE' or rows %}
+    <h3>{{ title }} · {{ rows|length }}只</h3>
+    <div class="table-wrap"><table><thead><tr><th>股票 / 题材</th><th>首板日期 / 路径 / 阶段</th><th>当前状态</th><th>现价 / 涨停价</th><th>前日封板资料</th><th>证据与待核条件</th></tr></thead><tbody>
+    {% for c in rows %}<tr><td><strong>{{ c.name or c.symbol }}</strong><small>{{ c.symbol }}</small><small>{{ c.theme or '题材未取得' }}</small></td><td>{{ c.first_board_date or '尚未收盘确认' }}<small>{{ c.route_ids or '路径待归属' }}</small><small>{{ c.lifecycle or '阶段未取得' }}</small></td><td>{{ c.state|intraday_label }}{% if c.risk_watch %}<small class="issue">风险观察</small>{% endif %}</td><td>{{ num(c.price) }} / {{ num(c.up_limit) }}<small>{{ c.quote_at or '无当前报价' }}</small></td><td>{% if c.prior_board %}首次 {{ c.prior_board.get('first_time') or '--' }}<small>最后 {{ c.prior_board.get('last_time') or '--' }}</small><small>打开 {{ c.prior_board.get('open_times') if c.prior_board.get('open_times') is not none else '--' }}次</small><small>换手 {{ num(c.prior_board.get('turnover_ratio'), '%') }}</small>{% else %}--{% endif %}</td><td class="explanation">{% for item in c.evidence + c.missing %}<small>{{ item }}</small>{% endfor %}</td></tr>{% else %}<tr><td colspan="6">{{ '尚无当日盘中判断' if obs.get('mode') == 'REFERENCE_ONLY' else '本轮无该类记录；资料不完整时不能据此认定没有机会' }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    {% endif %}{% endfor %}
+    <p class="muted">{{ obs.get('notice', '影子观察；不生成买入或成交结果。') }}</p>
+    {% for issue in obs.get('issues', []) %}<p class="issue">{{ issue }}</p>{% endfor %}
+  </section>
+  <section><h2>数据可用性</h2>{% if r %}{% for issue in r.issues %}<p class="issue">{{ issue }}</p>{% endfor %}<p class="muted">{{ r.ranking_method }}</p>{% endif %}
+    {% if data.permission %}<p class="muted">最近权限检查 {{ data.permission.checked_at }}</p><div class="table-wrap"><table><thead><tr><th>接口</th><th>检查结果</th></tr></thead><tbody>{% for p in data.permission.records %}<tr><td>{{ p.api }}</td><td>{{ p.status }}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+  </section>
+</main>
+<script src="{{ url_for('static', filename='mainwave_intraday.js') }}"></script>
+</body>
+</html>

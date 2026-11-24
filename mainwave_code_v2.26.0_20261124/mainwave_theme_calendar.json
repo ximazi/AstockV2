@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "version": "2026.08.29.1",
+  "effective_from": "2026-08-28",
+  "authored_on": "2026-08-29",
+  "description": "Forward theme calendar for categorical observation only. Calendar windows never create orders or register themes.",
+  "themes": [
+    {
+      "id": "ai_software_security",
+      "label": "AI应用/软件/数据安全",
+      "categories": ["POLICY", "INDUSTRY_ADOPTION"],
+      "aliases": ["软件服务", "AI应用", "人工智能", "数据要素", "网络安全", "信息安全", "财税数字化"],
+      "window_start": "2026-08-01",
+      "window_end": "2026-12-31",
+      "preheat_days": 0,
+      "catalyst": "人工智能+从硬件建设转向行业应用、智能体、数据治理和安全落地",
+      "confirmation": "热点连续传播，且至少一只载体达到RETAINED+ABSORBING以上；优先仍未明显扩张者",
+      "invalidation": "热点退潮且载体资金保留消失，或只有单日涨停、无后续传播",
+      "sources": [
+        "https://nxca.miit.gov.cn/zwgk/zcwj/wjfb/art/2026/art_bb7a0ac6c8174a47a436eaf571549e13.html",
+        "https://www.miit.gov.cn/cms_files/filemanager/1226211233/attach/20265/c24f132ee44a44809048330f3fbbcfe0.pdf"
+      ]
+    },
+    {
+      "id": "autumn_agriculture",
+      "label": "秋粮/种业/农化",
+      "categories": ["SEASONAL_DEMAND", "FOOD_SECURITY"],
+      "aliases": ["农药化肥", "种植业", "农用机械", "种业", "粮食", "供销社"],
+      "window_start": "2026-08-20",
+      "window_end": "2026-10-31",
+      "preheat_days": 15,
+      "catalyst": "秋粮中后期管护、病虫害防治、秋收与秋冬种形成连续农资需求窗口",
+      "transmission_focus": "优先植保农药、抗逆种子、节水灌溉和粮食安全；化肥需价格验证；纯种植企业可能受减产损害，不视为统一利好",
+      "external_catalyst": {
+        "type": "EL_NINO",
+        "state": "CONFIRMED_STRONG",
+        "as_of": "2026-08-13",
+        "review_on": "2026-09-10",
+        "valid_until": "2027-02-28",
+        "note": "NOAA已发布El Nino Advisory；只提高农业研究优先级，中国区域影响仍以国家气候中心滚动预报为准",
+        "source": "https://www.cpc.ncep.noaa.gov/products/analysis_monitoring/enso_advisory/ensodisc.html"
+      },
+      "confirmation": "农化与种业至少两个分支同步活跃，且出现RETAINED载体而非仅高换手涨停",
+      "invalidation": "农产品和农资价格催化消退，题材仅一日脉冲，载体不能完成资金保留",
+      "sources": [
+        "https://gxhzzs.jiangsu.gov.cn/art/2026/8/27/art_134_11821438.html",
+        "https://nynct.hlj.gov.cn/nynct/c115393/202608/c00_31967030.shtml"
+      ]
+    },
+    {
+      "id": "innovative_medicine",
+      "label": "创新药/创新医疗",
+      "categories": ["POLICY_CALENDAR", "INDUSTRY_CATALYST"],
+      "aliases": ["创新药", "生物制药", "化学制药", "医疗服务", "创新医疗"],
+      "window_start": "2026-08-01",
+      "window_end": "2026-11-30",
+      "preheat_days": 0,
+      "catalyst": "医保目录8至9月谈判协商、10至11月公布结果，形成可验证的公司级事件链",
+      "confirmation": "具体品种进入目录或临床/授权事实落地，同时个股出现资金保留与结构收敛",
+      "invalidation": "只交易目录预期但无具体品种映射，或板块扩张后进入拥挤/退潮",
+      "sources": [
+        "https://www.nhsa.gov.cn/art/2026/5/31/art_109_20816.html",
+        "https://www.nhsa.gov.cn/module/download/downfile.jsp?classid=0&filename=3b083334e4be44eca9e8837179e2b204.pdf"
+      ]
+    },
+    {
+      "id": "holiday_consumption",
+      "label": "中秋国庆消费/出行",
+      "categories": ["EVENT_CALENDAR", "SEASONAL_DEMAND"],
+      "aliases": ["食品", "旅游", "酒店餐饮", "商业连锁", "服饰", "影视音像", "交通服务"],
+      "window_start": "2026-09-10",
+      "window_end": "2026-10-10",
+      "preheat_days": 20,
+      "catalyst": "9月25至27日中秋、10月1至7日国庆，叠加服务消费政策",
+      "confirmation": "预订、客流或销售高频数据改善，且热点从单一分支扩散到两类以上消费载体",
+      "invalidation": "节前兑现、量价背离，或仅小市值情绪炒作而无持续载体",
+      "sources": [
+        "https://www.beijing.gov.cn/cs/gncs/zcwj/202603/t20260327_4568275.html",
+        "https://www.mee.gov.cn/zcwj/gwywj/202602/t20260202_1143389.shtml"
+      ]
+    },
+    {
+      "id": "industrial_upgrade",
+      "label": "设备更新/智能制造",
+      "categories": ["POLICY", "CAPEX_CYCLE"],
+      "aliases": ["专用机械", "机器人", "工业自动化", "工业软件", "农用机械", "运输设备"],
+      "window_start": "2026-08-01",
+      "window_end": "2026-12-31",
+      "preheat_days": 0,
+      "catalyst": "设备更新资金、制造业技术改造和AI+制造项目逐步落地",
+      "confirmation": "订单或项目事实出现，题材内部不依赖单一涨停股，载体保持RETAINED",
+      "invalidation": "只有政策复述、没有订单验证，或候选基本事实恶化且资金保留失败",
+      "sources": [
+        "https://www.ndrc.gov.cn/xxgk/jd/jd/202512/t20251230_1402853_ext.html",
+        "https://sheitc.sh.gov.cn/cyfz/20260717/7986191fa75f49a698259f01c829df52.html"
+      ]
+    },
+    {
+      "id": "winter_energy_grid",
+      "label": "迎峰度冬/电网/能源保供",
+      "categories": ["SEASONAL_DEMAND", "INFRASTRUCTURE"],
+      "aliases": ["电气设备", "电网设备", "智能电网", "供气供热", "天然气", "煤炭", "电力"],
+      "window_start": "2026-10-01",
+      "window_end": "2026-12-31",
+      "preheat_days": 35,
+      "catalyst": "迎峰度冬保供、电网运维改造和新能源消纳需求",
+      "confirmation": "进入采暖季前出现订单/保供政策与板块资金同步，至少一只低扩张载体成熟",
+      "invalidation": "暖冬或能源价格回落使保供交易降温，板块只有事件当日脉冲",
+      "sources": [
+        "https://www.nea.gov.cn/20260306/ef0fe4ad3b9c4b0281d619be7b5ea919/c.html",
+        "https://www.nea.gov.cn/20260130/60279d52036044109cd24c7b279eaf71/c.html"
+      ]
+    },
+    {
+      "id": "chemical_price_cycle",
+      "label": "化工涨价/供给约束",
+      "categories": ["INDUSTRY_PRICE", "Q3_EARNINGS"],
+      "aliases": ["化工原料", "染料涂料", "涨价概念", "盐化工", "氟化工"],
+      "window_start": "2026-08-20",
+      "window_end": "2026-10-31",
+      "preheat_days": 0,
+      "catalyst": "供给约束与价格变化进入三季报验证窗口；当前属于已启动轮动而非年末埋伏",
+      "confirmation": "产品价格与三季报事实延续，扩张后的载体回撤缩量并重新保留资金",
+      "invalidation": "产品价格反转、盈利传导落空，或板块高位扩散后快速退潮",
+      "sources": [
+        "https://finance.sina.com.cn/roll/2026-08-28/doc-inipwaiy0117399.shtml"
+      ]
+    },
+    {
+      "id": "ciie_trade_logistics",
+      "label": "进博会/进口消费/物流",
+      "categories": ["EVENT_CALENDAR", "TRADE"],
+      "aliases": ["跨境电商", "物流", "港口", "进口消费", "零售"],
+      "window_start": "2026-10-20",
+      "window_end": "2026-11-10",
+      "preheat_days": 30,
+      "catalyst": "第九届进博会于11月5至10日举行",
+      "confirmation": "展会订单、采购或物流数据映射到具体公司，并出现可持续资金载体",
+      "invalidation": "只有会展概念标签，没有业务映射和资金传播",
+      "sources": [
+        "https://www.ciie.org/zbh/"
+      ]
+    },
+    {
+      "id": "ai_hardware_repair",
+      "label": "半导体/CPO/存储/PCB修复池",
+      "categories": ["REPAIR_ONLY"],
+      "aliases": ["半导体", "存储", "通信设备", "光模块", "CPO", "元器件", "PCB", "覆铜板"],
+      "registered_theme_ids": ["storage", "optical_cpo", "ccl_fiberglass"],
+      "mode": "REPAIR",
+      "window_start": "2026-08-01",
+      "window_end": "2026-12-31",
+      "preheat_days": 0,
+      "catalyst": "长期产业逻辑仍在，但前期涨幅和随后回撤已损伤板块结构",
+      "confirmation": "旧周期退潮结束后建立新cycle，板块回到趋势结构且出现RETAINED成熟载体；仅单日反弹不算",
+      "invalidation": "继续破位、反弹无量、领头股无法恢复或新周期没有独立传播",
+      "sources": []
+    }
+  ]
+}

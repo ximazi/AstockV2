@@ -1,0 +1,172 @@
+<title>S4 回踩再启动案例图谱</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{
+  --ground:#f3f5f3; --surface:#ffffff; --ink:#18211d; --muted:#5d6a64; --line:#dde3df; --faint:#eef2ef;
+  --up:#d0342c; --down:#16875a; --buy:#3150c4; --peak:#c28100; --stop:#8a2a6b; --window:rgba(49,80,196,.06);
+  --ema:#e08a1e; --ma60:#6b7a8f; --dif:#1d1f24; --dea:#d08a00; --chip-win-bg:#e6f3ec; --chip-win:#146b47; --chip-fail-bg:#f8e7e6; --chip-fail:#a8281f;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#111614; --surface:#18201d; --ink:#e6ece9; --muted:#9aa8a1; --line:#2a3531; --faint:#1f2925;
+    --up:#ef5a50; --down:#35b07c; --buy:#7d95ff; --peak:#f0b63a; --stop:#d271b4; --window:rgba(125,149,255,.09);
+    --ema:#f0a650; --ma60:#94a3b8; --dif:#e6ece9; --dea:#f0b63a; --chip-win-bg:#173427; --chip-win:#6fd3a3; --chip-fail-bg:#3a1c1a; --chip-fail:#f08a82;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#111614; --surface:#18201d; --ink:#e6ece9; --muted:#9aa8a1; --line:#2a3531; --faint:#1f2925;
+  --up:#ef5a50; --down:#35b07c; --buy:#7d95ff; --peak:#f0b63a; --stop:#d271b4; --window:rgba(125,149,255,.09);
+  --ema:#f0a650; --ma60:#94a3b8; --dif:#e6ece9; --dea:#f0b63a; --chip-win-bg:#173427; --chip-win:#6fd3a3; --chip-fail-bg:#3a1c1a; --chip-fail:#f08a82;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;font-size:14px;line-height:1.6}
+.wrap{max-width:1240px;margin:0 auto;padding-inline:16px;padding-block:28px 48px;display:grid;gap:22px}
+header{display:grid;gap:10px}
+h1{font-size:26px;line-height:1.25;margin:0;font-weight:700;text-wrap:balance;letter-spacing:.01em}
+.lede{margin:0;color:var(--muted);max-width:70ch}
+.num{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:13px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.bar{width:14px;height:0;border-top:2px dashed;display:inline-block}
+.tabs{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface);justify-self:start}
+.tabs button{appearance:none;border:0;background:transparent;color:var(--muted);font:inherit;padding:7px 16px;cursor:pointer}
+.tabs button[aria-selected="true"]{background:var(--ink);color:var(--surface)}
+.tabs button:focus-visible{outline:2px solid var(--buy);outline-offset:-2px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,540px),1fr));gap:16px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 14px 12px;display:grid;gap:8px;min-width:0}
+.card h2{margin:0;font-size:16px;font-weight:700;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.chip{font-size:12px;font-weight:500;padding:1px 8px;border-radius:999px}
+.chip.win{background:var(--chip-win-bg);color:var(--chip-win)}
+.chip.fail{background:var(--chip-fail-bg);color:var(--chip-fail)}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:4px 12px;font-size:12.5px}
+.facts div{display:grid}
+.facts b{font-weight:500;color:var(--muted);font-size:11.5px;letter-spacing:.04em}
+.chart{width:100%;height:360px}
+.ind{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:2px 10px;font-size:12px;border-top:1px solid var(--faint);padding-top:8px}
+.ind div{display:flex;justify-content:space-between;gap:6px;color:var(--muted)}
+.ind span.num{color:var(--ink)}
+.note{font-size:12.5px;color:var(--muted);margin:0}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>S4 回踩 EMA20 再启动：成功与失败案例</h1>
+    <p class="lede">每张图：信号日前 60 个交易日到后 25 个交易日。买入按信号次日开盘价；评价窗口为买入后 20 个交易日（浅色底）。成功＝止损前最高价达到买入价 +15%；失败＝盘中最低价触及买入价 −10%。价格为信号日当时的价格尺度。</p>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--buy)"></i>买入点（次日开盘）</span>
+      <span><i class="dot" style="background:var(--peak)"></i>最高点（止损前）</span>
+      <span><i class="dot" style="background:var(--stop)"></i>止损点（触及 −10%）</span>
+      <span><i class="bar" style="border-color:var(--ema)"></i>EMA20</span>
+      <span><i class="bar" style="border-color:var(--ma60)"></i>MA60</span>
+      <span>副图 MACD(12,26,9)：<i class="bar" style="border-color:var(--dif);border-top-style:solid"></i>DIF <i class="bar" style="border-color:var(--dea);border-top-style:solid"></i>DEA，红绿柱</span>
+      <span>虚线：买入价 / −10% / +10% / +15%</span>
+    </div>
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tab-win" aria-selected="true" data-set="win">成功 10</button>
+      <button role="tab" id="tab-fail" aria-selected="false" data-set="fail">失败 10</button>
+    </div>
+  </header>
+  <section id="panel-win" class="grid" role="tabpanel" aria-labelledby="tab-win"></section>
+  <section id="panel-fail" class="grid" role="tabpanel" aria-labelledby="tab-fail" hidden></section>
+  <p class="note">样本：2025-01 至 2026-08 的 S4 信号，排除持有期触及 2026-03、2026-07 的案例及信号日为 ST 的股票（按当日记录），成功每月最多一只、失败每月最多两只；零成交日在卡片上单列。研究用途，不构成交易建议。</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
+<script>
+const DATA = /*__DATA__*/null;
+document.getElementById('tab-win').textContent = `成功 ${DATA.win.length}`;
+document.getElementById('tab-fail').textContent = `失败 ${DATA.fail.length}`;
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const charts = [];
+
+function card(c, set){
+  const el = document.createElement('article');
+  el.className = 'card';
+  const stop = c.stop_day ? `<span class="num">${c.stop_day}</span> @ <span class="num">${c.stop_price}</span>` : '未触发';
+  el.innerHTML = `
+    <h2>${c.name} <span class="num" style="font-weight:400;color:var(--muted)">${c.code}</span>
+      <span class="chip ${set}">${set === 'win' ? '成功 · 最高 +' + c.peak_pct + '%' : '失败 · 触及 −10%'}</span></h2>
+    <div class="facts">
+      <div><b>信号日</b><span class="num">${c.signal}</span></div>
+      <div><b>买入</b><span><span class="num">${c.entry_day}</span> @ <span class="num">${c.entry}</span></span></div>
+      <div><b>最高</b><span><span class="num">${c.peak_day}</span> @ <span class="num">${c.peak}</span>（<span class="num">${c.peak_pct >= 0 ? '+' : ''}${c.peak_pct}%</span>）</span></div>
+      <div><b>止损</b><span>${stop}</span></div>
+    </div>
+    <div class="chart" role="img" aria-label="${c.name} K线图"></div>
+    <div class="ind">${Object.entries(c.ind).map(([k, v]) => `<div>${k}<span class="num">${v}</span></div>`).join('')}</div>`;
+  return el;
+}
+
+function option(c){
+  const dates = c.bars.map(b => b[0]);
+  const k = c.bars.map(b => [b[1], b[2], b[3], b[4]]);
+  const macd = c.macd.map(v => ({value: v, itemStyle: {color: v >= 0 ? css('--up') : css('--down')}}));
+  const text = css('--muted'), line = css('--line');
+  const hl = (v, name, color, type) => ({yAxis: v, name, lineStyle: {color, type, width: 1}, label: {formatter: name, color, fontSize: 10, position: 'insideEndTop'}});
+  const marks = [
+    {name: '买入', coord: [c.entry_day, c.entry], itemStyle: {color: css('--buy')}},
+    {name: '最高', coord: [c.peak_day, c.peak], itemStyle: {color: css('--peak')}},
+  ];
+  if (c.stop_day) marks.push({name: '止损', coord: [c.stop_day, c.stop_price], itemStyle: {color: css('--stop')}});
+  return {
+    animation: false,
+    textStyle: {fontFamily: '"Noto Sans SC", system-ui, sans-serif'},
+    grid: [{left: 48, right: 12, top: 12, height: '58%'}, {left: 48, right: 12, top: '74%', height: '20%'}],
+    tooltip: {trigger: 'axis', axisPointer: {type: 'cross'}, backgroundColor: css('--surface'), borderColor: line, textStyle: {color: css('--ink'), fontSize: 12}},
+    xAxis: [
+      {type: 'category', data: dates, boundaryGap: true, axisLine: {lineStyle: {color: line}}, axisLabel: {color: text, fontSize: 10}, axisTick: {show: false}},
+      {type: 'category', data: dates, gridIndex: 1, boundaryGap: true, axisLabel: {show: false}, axisLine: {lineStyle: {color: line}}, axisTick: {show: false}}],
+    yAxis: [
+      {scale: true, splitLine: {lineStyle: {color: css('--faint')}}, axisLabel: {color: text, fontSize: 10}},
+      {gridIndex: 1, scale: true, splitNumber: 2, axisLabel: {color: text, fontSize: 9}, splitLine: {lineStyle: {color: css('--faint')}}}],
+    series: [
+      {type: 'candlestick', name: 'K线', data: k,
+        itemStyle: {color: css('--up'), color0: css('--down'), borderColor: css('--up'), borderColor0: css('--down')},
+        markPoint: {symbol: 'pin', symbolSize: 34, label: {fontSize: 10, color: '#fff', formatter: p => p.name}, data: marks},
+        markLine: {symbol: 'none', silent: true, data: [
+          hl(c.entry, '买入价', css('--buy'), 'dashed'), hl(c.stop_price, '−10%', css('--stop'), 'dashed'),
+          hl(+(c.entry * 1.10).toFixed(3), '+10%', css('--peak'), 'dotted'), hl(+(c.entry * 1.15).toFixed(3), '+15%', css('--peak'), 'dotted')]},
+        markArea: {silent: true, itemStyle: {color: css('--window')}, data: [[{xAxis: c.entry_day}, {xAxis: c.end_day}]]}},
+      {type: 'line', name: 'EMA20', data: c.ema20, showSymbol: false, lineStyle: {width: 1.2, color: css('--ema')}, itemStyle: {color: css('--ema')}},
+      {type: 'line', name: 'MA60', data: c.ma60, showSymbol: false, lineStyle: {width: 1.2, color: css('--ma60')}, itemStyle: {color: css('--ma60')}},
+      {type: 'bar', name: 'MACD', xAxisIndex: 1, yAxisIndex: 1, data: macd, barWidth: '60%',
+        markLine: {symbol: 'none', silent: true, label: {show: false}, lineStyle: {color: line, type: 'solid', width: 1}, data: [{yAxis: 0}]}},
+      {type: 'line', name: 'DIF', xAxisIndex: 1, yAxisIndex: 1, data: c.dif, showSymbol: false, lineStyle: {width: 1.1, color: css('--dif')}, itemStyle: {color: css('--dif')}},
+      {type: 'line', name: 'DEA', xAxisIndex: 1, yAxisIndex: 1, data: c.dea, showSymbol: false, lineStyle: {width: 1.1, color: css('--dea')}, itemStyle: {color: css('--dea')}}]
+  };
+}
+
+function render(set){
+  const panel = document.getElementById('panel-' + set);
+  if (!panel.dataset.ready){
+    DATA[set].forEach(c => {
+      const el = card(c, set);
+      panel.appendChild(el);
+      const chart = echarts.init(el.querySelector('.chart'));
+      chart.setOption(option(c));
+      charts.push({chart, c});
+    });
+    panel.dataset.ready = '1';
+  }
+  charts.forEach(x => x.chart.resize());
+}
+
+document.querySelectorAll('.tabs button').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', b === btn));
+  ['win', 'fail'].forEach(s => document.getElementById('panel-' + s).hidden = s !== btn.dataset.set);
+  render(btn.dataset.set);
+}));
+
+const repaint = () => charts.forEach(x => x.chart.setOption(option(x.c), true));
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', repaint);
+new MutationObserver(repaint).observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+window.addEventListener('resize', () => charts.forEach(x => x.chart.resize()));
+
+if (window.echarts && DATA) render('win');
+</script>

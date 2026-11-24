@@ -1,0 +1,1072 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "review.report.v2"
+    },
+    "meta": {
+      "type": "object",
+      "properties": {
+        "report_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "trade_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "market_as_of": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "knowledge_as_of": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rendered_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "frozen_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "TEMPLATE",
+            "HISTORICAL_DEMO",
+            "FROZEN_EOD",
+            "INTRADAY_UPDATE"
+          ]
+        },
+        "forward_frozen": {
+          "type": "boolean"
+        },
+        "source_status": {
+          "type": "string"
+        },
+        "quote_status": {
+          "type": "string"
+        },
+        "order_enabled": {
+          "const": false
+        },
+        "objective": {
+          "type": "string"
+        },
+        "horizon": {
+          "type": "string"
+        },
+        "allowed_modes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "STRONG_CONFIRM",
+              "TREND_PULLBACK",
+              "OVERNIGHT"
+            ]
+          }
+        },
+        "rule_version": {
+          "type": "string"
+        },
+        "mapping_version": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "banner": {
+          "type": "string"
+        },
+        "portfolio_status": {
+          "enum": [
+            "NOT_PROVIDED",
+            "VERIFIED_SNAPSHOT"
+          ]
+        },
+        "required_symbols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "report_id",
+        "title",
+        "trade_date",
+        "target_date",
+        "market_as_of",
+        "knowledge_as_of",
+        "rendered_at",
+        "frozen_at",
+        "timezone",
+        "mode",
+        "forward_frozen",
+        "source_status",
+        "quote_status",
+        "order_enabled",
+        "objective",
+        "horizon",
+        "allowed_modes",
+        "rule_version",
+        "mapping_version",
+        "scope",
+        "banner",
+        "portfolio_status",
+        "required_symbols"
+      ],
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "claim_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "focus_ids": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "focus_title": {
+          "type": "string"
+        },
+        "focus_note": {
+          "type": "string"
+        },
+        "risk": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "claim_ids",
+        "focus_ids",
+        "focus_title",
+        "focus_note",
+        "risk",
+        "decision"
+      ],
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "evidence_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value",
+          "unit",
+          "note",
+          "evidence_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "limit_up": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit_down": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pool_close_median": {
+            "type": "number"
+          },
+          "pool_close_open_mean": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "date",
+          "limit_up",
+          "limit_down",
+          "pool_close_median",
+          "pool_close_open_mean"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "INTERPRETATION",
+              "HYPOTHESIS",
+              "LOCAL_CALCULATION"
+            ]
+          },
+          "facts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "comparison": {
+            "type": "string"
+          },
+          "interpretation": {
+            "type": "string"
+          },
+          "contrary": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "conclusion": {
+            "type": "string"
+          },
+          "next_check": {
+            "type": "string"
+          },
+          "evidence_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "type",
+          "facts",
+          "comparison",
+          "interpretation",
+          "contrary",
+          "conclusion",
+          "next_check",
+          "evidence_ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "sections": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "enum": [
+              "01",
+              "02",
+              "03",
+              "04",
+              "05",
+              "06",
+              "07"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "subtitle": {
+            "type": "string"
+          },
+          "claim_id": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "table": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "columns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "rows": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": [
+                      "string",
+                      "number",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "evidence_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "columns",
+              "rows",
+              "evidence_ids",
+              "note"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "subtitle",
+          "claim_id",
+          "hint",
+          "table"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "stocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string"
+          },
+          "role_verified": {
+            "type": "boolean"
+          },
+          "mode": {
+            "enum": [
+              "STRONG_CONFIRM",
+              "TREND_PULLBACK",
+              "OVERNIGHT"
+            ]
+          },
+          "model_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "opportunity_label": {
+            "type": "string"
+          },
+          "opportunity_reason": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "DATA_GAP",
+              "WATCH",
+              "WAIT_SETUP",
+              "WAIT_TRIGGER",
+              "PLAN_READY",
+              "SIGNAL_CONFIRMED",
+              "REJECT",
+              "EXPIRED"
+            ]
+          },
+          "horizon": {
+            "type": "string"
+          },
+          "metrics": {
+            "type": "object",
+            "properties": {
+              "change_pct": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "amount_yi": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "close_location": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 1
+              },
+              "return20_pct": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "change_pct",
+              "amount_yi",
+              "close_location",
+              "return20_pct"
+            ],
+            "additionalProperties": false
+          },
+          "support_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "contrary": {
+            "type": "string"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "next_check": {
+            "type": "string"
+          },
+          "invalidating": {
+            "type": "string"
+          },
+          "prior_plan_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "strategy_version": {
+                    "type": "string"
+                  },
+                  "approval_status": {
+                    "enum": [
+                      "DRAFT",
+                      "APPROVED",
+                      "REJECTED"
+                    ]
+                  },
+                  "signal_condition": {
+                    "type": "string"
+                  },
+                  "trigger_state": {
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED",
+                      "FAILED"
+                    ]
+                  },
+                  "entry_min": {
+                    "type": "number"
+                  },
+                  "entry_max": {
+                    "type": "number"
+                  },
+                  "invalidation_price": {
+                    "type": "number"
+                  },
+                  "exit_rule": {
+                    "type": "string"
+                  },
+                  "max_loss_cash": {
+                    "type": "number"
+                  },
+                  "budget_status": {
+                    "enum": [
+                      "PASS",
+                      "FAIL",
+                      "UNKNOWN"
+                    ]
+                  },
+                  "valid_from": {
+                    "type": "string"
+                  },
+                  "expires_at": {
+                    "type": "string"
+                  },
+                  "quote_as_of": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "quote_fresh": {
+                    "type": "boolean"
+                  },
+                  "source_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "hard_blocks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "strategy_version",
+                  "approval_status",
+                  "signal_condition",
+                  "trigger_state",
+                  "entry_min",
+                  "entry_max",
+                  "invalidation_price",
+                  "exit_rule",
+                  "max_loss_cash",
+                  "budget_status",
+                  "valid_from",
+                  "expires_at",
+                  "quote_as_of",
+                  "quote_fresh",
+                  "source_ids",
+                  "hard_blocks"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "review_deadline": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "symbol",
+          "name",
+          "pinned",
+          "role",
+          "role_verified",
+          "mode",
+          "model_version",
+          "opportunity_label",
+          "opportunity_reason",
+          "status",
+          "horizon",
+          "metrics",
+          "support_ids",
+          "contrary",
+          "missing",
+          "next_check",
+          "invalidating",
+          "prior_plan_id",
+          "plan",
+          "review_deadline",
+          "notes"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "modes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "minimum": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "status",
+          "scope",
+          "minimum",
+          "rule"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "BLOCK",
+              "WARN"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "impact": {
+            "type": "string"
+          },
+          "evidence_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "id",
+          "severity",
+          "title",
+          "detail",
+          "impact",
+          "evidence_ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "origin": {
+            "enum": [
+              "USER_DATA",
+              "LOCAL_CALCULATION",
+              "USER_MATERIAL",
+              "DESIGN",
+              "EXTERNAL_DOCUMENT"
+            ]
+          },
+          "source_path": {
+            "type": "string"
+          },
+          "locator": {
+            "type": "string"
+          },
+          "snapshot_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "available_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "origin",
+          "source_path",
+          "locator",
+          "snapshot_sha256",
+          "available_at",
+          "content"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "spec": {
+      "type": "object",
+      "properties": {
+        "principles": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "data_matrix": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "workflow": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "new_vs_source": {
+          "type": "string"
+        },
+        "budget": {
+          "type": "string"
+        },
+        "security": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "principles",
+        "data_matrix",
+        "workflow",
+        "errors",
+        "coverage",
+        "new_vs_source",
+        "budget",
+        "security"
+      ],
+      "additionalProperties": false
+    },
+    "comparisons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "objective": {
+            "type": "string"
+          },
+          "matched": {
+            "type": "boolean"
+          },
+          "conclusion": {
+            "type": "string"
+          },
+          "support_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "symbols",
+          "objective",
+          "matched",
+          "conclusion",
+          "support_ids",
+          "missing"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "veto": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "evidence",
+          "action",
+          "veto"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "audit": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "POST_EVENT_METHOD_AUDIT",
+            "FORWARD_EVALUATION",
+            "EMPTY"
+          ]
+        },
+        "note": {
+          "type": "string"
+        },
+        "previous": {
+          "type": "string"
+        },
+        "correction": {
+          "type": "string"
+        },
+        "not_proven": {
+          "type": "string"
+        },
+        "frozen_plan_available": {
+          "type": "boolean"
+        },
+        "matched_quote_available": {
+          "type": "boolean"
+        },
+        "actual_fills_available": {
+          "type": "boolean"
+        },
+        "review_sample_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "title",
+        "kind",
+        "note",
+        "previous",
+        "correction",
+        "not_proven",
+        "frozen_plan_available",
+        "matched_quote_available",
+        "actual_fills_available",
+        "review_sample_count"
+      ],
+      "additionalProperties": false
+    },
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "priority": {
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "max_rows": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "cutoff": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "priority",
+          "symbols",
+          "purpose",
+          "fields",
+          "max_rows",
+          "cutoff"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "meta",
+    "summary",
+    "metrics",
+    "history",
+    "claims",
+    "sections",
+    "stocks",
+    "modes",
+    "issues",
+    "sources",
+    "spec",
+    "comparisons",
+    "scenarios",
+    "audit",
+    "requests"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-report:v2",
+  "title": "每日复盘V2展示数据契约（不是AI输入或交易订单）"
+}

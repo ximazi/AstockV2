@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "version": "mean_reversion_shadow_config_v1_20260903",
+  "frozen_at": "2026-09-03",
+  "effective_from": "2026-09-03",
+  "production_enabled": false,
+  "active_market_contexts": ["BEAR", "PANIC", "POST_PANIC"],
+  "sectors": {
+    "semi_manufacturing_equipment": {
+      "label": "半导体制造/设备",
+      "enabled": true,
+      "threshold_pct": -25.0,
+      "entry_mode": "REPAIR_CONFIRM",
+      "signal_ttl_sessions": 5,
+      "evidence_class": "FULL_HISTORY_DIRECTIONAL",
+      "members": {
+        "sh_688347": "华虹公司",
+        "sz_002371": "北方华创",
+        "sh_688012": "中微公司",
+        "sh_688072": "拓荆科技",
+        "sh_688120": "华海清科",
+        "sh_688082": "盛美上海"
+      }
+    },
+    "optical_modules": {
+      "label": "光模块/CPO",
+      "enabled": true,
+      "threshold_pct": -15.0,
+      "entry_mode": "NEXT_OPEN",
+      "signal_ttl_sessions": 0,
+      "evidence_class": "RECENT_REGIME_ONLY",
+      "members": {
+        "sz_300502": "新易盛",
+        "sz_300308": "中际旭创",
+        "sz_300394": "天孚通信",
+        "sz_002281": "光迅科技",
+        "sz_300570": "太辰光"
+      }
+    },
+    "storage_chain": {
+      "label": "存储链",
+      "enabled": false,
+      "threshold_pct": null,
+      "entry_mode": "NONE",
+      "signal_ttl_sessions": 0,
+      "evidence_class": "NO_VALIDATED_THRESHOLD",
+      "members": {
+        "sh_603986": "兆易创新",
+        "sz_300223": "北京君正",
+        "sh_688110": "东芯股份",
+        "sz_001309": "德明利",
+        "sh_688525": "佰维存储",
+        "sh_688008": "澜起科技",
+        "sz_301308": "江波龙"
+      }
+    }
+  }
+}

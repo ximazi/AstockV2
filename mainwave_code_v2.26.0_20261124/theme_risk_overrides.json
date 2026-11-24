@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "description": "Point-in-time manual macro overlays. These gates affect report actions only, never historical discovery evidence.",
+  "overrides": [
+    {
+      "id": "robot_cooling_review_20261027",
+      "known_at": "2026-10-27T23:10:34+08:00",
+      "effective_from": "2026-10-27",
+      "expires_after": "2026-10-30",
+      "review_on": "2026-10-28",
+      "aliases": ["机器人", "人形机器人"],
+      "exclude_aliases": [],
+      "action": "REQUIRE_EXTERNAL_CONFIRMATION",
+      "reason": "人工风险复核：近三交易日机器人涨停数与上涨广度同步回落，部分公司提示业务相关性或商业化风险。保留观察，不据此认定所有公司基本面恶化；新入场须另行确认题材修复和个股承接。此为有期限的人工约束，不是回测阈值。",
+      "source": "用户风险判断；本地2026-10-23/26/27盘后事实；公司风险公告及财联社2026-10-27风险汇总",
+      "source_urls": [
+        "https://www.cls.cn/detail/2515947",
+        "https://static.cninfo.com.cn/finalpage/2026-10-21/1225613088.PDF"
+      ]
+    },
+    {
+      "id": "warsh_precious_metals_20260828",
+      "known_at": "2026-08-29",
+      "effective_from": "2026-08-31",
+      "expires_after": "2026-09-11",
+      "review_on": "2026-08-31",
+      "aliases": ["黄金", "白银", "贵金属", "珠宝"],
+      "exclude_aliases": [],
+      "action": "BLOCK_NEW_ENTRY",
+      "reason": "沃什讲话后美元和短端利率上行，黄金白银急跌；A股下一交易日先等待冲击定价与修复。",
+      "source": "AP 2026-08-28; Kitco 2026-08-28",
+      "source_urls": [
+        "https://apnews.com/article/ab896df808df3a5a3fa8b943ac5f3867",
+        "https://www.kitco.com/news/article/2026-08-28/gold-silver-sink-warsh-revives-september-fed-hike-trade-kitco-pm-report"
+      ]
+    },
+    {
+      "id": "warsh_industrial_metals_20260828",
+      "known_at": "2026-08-29",
+      "effective_from": "2026-08-31",
+      "expires_after": "2026-09-04",
+      "review_on": "2026-08-31",
+      "aliases": ["铜", "铝", "工业金属", "有色金属", "小金属"],
+      "exclude_aliases": ["黄金", "白银", "贵金属", "珠宝"],
+      "action": "REQUIRE_EXTERNAL_CONFIRMATION",
+      "reason": "工业金属同时受美元、利率与供需影响，不能沿用贵金属结论；等待外盘与A股开盘确认。",
+      "source": "MarketScreener materials roundup 2026-08-28",
+      "source_urls": [
+        "https://www.marketscreener.com/news/materials-flat-after-warsh-speech-materials-roundup-ce7858dcd989f322"
+      ]
+    }
+  ]
+}

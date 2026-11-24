@@ -1,0 +1,20 @@
+{
+  "version": "membership_evidence_v1_20261029",
+  "links": [
+    {
+      "symbol": "sz_000678",
+      "themes": ["机器人概念", "人形机器人"],
+      "relation_kind": "MARKET_NARRATIVE",
+      "effective_from": "2026-10-29",
+      "known_at": "2026-10-29T15:18:33+08:00",
+      "review_on": "2026-11-05",
+      "published_on": "2026-10-27",
+      "source_urls": [
+        "https://static.cninfo.com.cn/finalpage/2026-10-24/1225619725.PDF",
+        "https://news.10jqka.com.cn/20261027/c681157203.shtml"
+      ],
+      "evidence": "市场沿机器人减速器链炒作精密轴承。公司公告确认部分产品可用于谐波/RV减速器，但累计收入仅16.11万元、占上半年营收0.023%，尚未盈利。",
+      "risk_note": "机器人市场叙事关联，不代表机器人主营或业绩龙头；相关业务仍在拓展期。"
+    }
+  ]
+}

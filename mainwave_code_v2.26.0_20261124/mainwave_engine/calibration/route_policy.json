@@ -1,0 +1,15 @@
+{
+  "version": "route_policy_v1_20260910",
+  "policy": "accepted_bias2",
+  "frozen_on": "2026-09-10",
+  "training_years": [2023, 2024],
+  "training_outcome_cutoff": "2024-12-31",
+  "historical_check_years": [2025, 2026],
+  "selection_objective": "Minimum frequency of event-close 20-session declines >=10%; then positive20; >=500 mature events",
+  "validation": "HISTORICAL_RISK_FILTER_NOT_PROFIT_VALIDATED",
+  "research_report": "results/mainwave_engine/route_validation_20260910/report.md",
+  "feature_version": "route_evidence_v1_20260910",
+  "orders_enabled": false,
+  "preparation_policy": "WATCH_ONLY_NOT_AN_ENTRY_GATE",
+  "propagation_policy": "DATED_CHAIN_REQUIRED; LONG_HISTORY_NOT_VALIDATED"
+}

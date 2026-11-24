@@ -1,0 +1,96 @@
+{
+  "version": "selection_board_v1_20260906",
+  "updated_at": "2026-09-06",
+  "scope": "最近对话中明确入选的研究观察与潜伏预备名单；不含宽口径召回池或仅作排除说明的风险对照。排序为研究关注顺序，不是收益排名或买入许可。",
+  "batches": [
+    {
+      "id": "first_pullback_20260904",
+      "title": "首回踩复核",
+      "as_of": "2026-09-04",
+      "recorded_at": "2026-09-06",
+      "report": "FIRST_PULLBACK_MODE_AND_SCAN_20260904.md",
+      "records": [
+        {"symbol":"sz_300957","name":"贝泰妮","theme":"功效护肤、消费","group":"WATCH","note":"局部首回踩确认后保持；较大周期仍需修复，上方34元附近有供给。","snapshot":{"price_date":"2026-09-04","close":33.61,"ema20_bias_pct":2.37,"ret5_pct":2.31,"ret20_pct":0.96,"route":"LOCAL_FIRST_PULLBACK_CONFIRMED","cycle":"PULLBACK","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_600809","name":"山西汾酒","theme":"白酒","group":"WATCH","note":"局部回踩后放量收复双均线，不是整个大周期首次上涨。","snapshot":{"price_date":"2026-09-04","close":122.56,"ema20_bias_pct":3.09,"ret5_pct":2.97,"ret20_pct":1.95,"route":"LOCAL_FIRST_PULLBACK_CONFIRMED","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_000596","name":"古井贡酒","theme":"白酒","group":"WATCH","note":"已有前段上涨，归入趋势内再启动，不按全周期首次回踩处理。","snapshot":{"price_date":"2026-09-04","close":101.17,"ema20_bias_pct":6.84,"ret5_pct":7.74,"ret20_pct":10.34,"route":"LOCAL_FIRST_PULLBACK_CONFIRMED","cycle":"MARKUP","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_000860","name":"顺鑫农业","theme":"白酒","group":"WATCH","note":"本次看白酒共振，不因名称含农业而归入粮食种植主线。","snapshot":{"price_date":"2026-09-04","close":11.03,"ema20_bias_pct":3.71,"ret5_pct":3.67,"ret20_pct":2.32,"route":"LOCAL_FIRST_PULLBACK_CONFIRMED","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_603050","name":"科林电气","theme":"输配电、智能电网","group":"WATCH","note":"收复短均线但仍低于EMA60，仅作较弱修复观察。","snapshot":{"price_date":"2026-09-04","close":18.5,"ema20_bias_pct":1.44,"ret5_pct":3.35,"ret20_pct":2.61,"route":"LOCAL_FIRST_PULLBACK_CONFIRMED","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_603444","name":"吉比特","theme":"游戏、内容消费","group":"WATCH","note":"长时间整理后再转强；400附近有压力，不算干净的短周期首回踩。","snapshot":{"price_date":"2026-09-04","close":399.9,"ema20_bias_pct":4,"ret5_pct":3.05,"ret20_pct":4.5,"route":"LOCAL_FIRST_PULLBACK_CONFIRMED","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}}
+      ]
+    },
+    {
+      "id": "theme_breakout_20260904",
+      "title": "题材突破扩展",
+      "as_of": "2026-09-04",
+      "recorded_at": "2026-09-06",
+      "report": "THEME_BREAKOUT_OPPORTUNITIES_20260904.md",
+      "records": [
+        {"symbol":"sh_688023","name":"安恒信息","theme":"网络安全、AI安全","group":"WATCH","note":"局部放量突破；关注42.30至42.46附近承接，偏离已扩大，不追涨。","snapshot":{"price_date":"2026-09-04","close":43.07,"ema20_bias_pct":8.41,"ret5_pct":9.15,"ret20_pct":7.89,"route":"BREAKOUT_TODAY","cycle":"IGNITION","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_300731","name":"科创新源","theme":"液冷板、数据中心散热","group":"WATCH","note":"保留早期入选记录；综合复核未入前5，最新日弱收盘，需重新验证承接。","snapshot":{"price_date":"2026-09-04","close":45,"ema20_bias_pct":5.47,"ret5_pct":6.01,"ret20_pct":16.73,"route":"RECENT_BREAKOUT","cycle":"PULLBACK","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_301252","name":"同星科技","theme":"液冷换热零部件","group":"WATCH","note":"关注36.08至36.25附近承接；近期涨幅已大，液冷模组与批量零部件分开看。","snapshot":{"price_date":"2026-09-04","close":36.5,"ema20_bias_pct":6.14,"ret5_pct":4.02,"ret20_pct":18.74,"route":"RECENT_BREAKOUT","cycle":"PULLBACK","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_603585","name":"苏利股份","theme":"农药、植保","group":"WATCH","note":"10.63附近仅勉强保持，等待再次增量；气候叙事不等于利润已兑现。","snapshot":{"price_date":"2026-09-04","close":10.66,"ema20_bias_pct":2.34,"ret5_pct":0.85,"ret20_pct":5.34,"route":"RECENT_BREAKOUT","cycle":"MARKUP","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_301337","name":"亚华电子","theme":"医疗信息化","group":"WATCH","note":"局部放量突破；AI与鸿蒙叠加需要核实商业贡献。","snapshot":{"price_date":"2026-09-04","close":27.19,"ema20_bias_pct":4.82,"ret5_pct":5.63,"ret20_pct":9.64,"route":"BREAKOUT_TODAY","cycle":"IGNITION","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_300008","name":"天海防务","theme":"船舶、海工","group":"WATCH","note":"同业同步放量线索，等待后续保持，不把一次放量当作吸筹确认。","snapshot":{"price_date":"2026-09-04","close":6.46,"ema20_bias_pct":3.31,"ret5_pct":2.7,"ret20_pct":3.86,"route":"BREAKOUT_TODAY","cycle":"IGNITION","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_600685","name":"中船防务","theme":"船舶制造","group":"WATCH","note":"与天海防务观察同业共振，尚需验证持续性和独立催化。","snapshot":{"price_date":"2026-09-04","close":27.44,"ema20_bias_pct":4.74,"ret5_pct":4.22,"ret20_pct":5.05,"route":"BREAKOUT_TODAY","cycle":"IGNITION","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_000905","name":"厦门港务","theme":"港口物流","group":"WATCH","note":"局部突破后看承接；区域概念不是主营受益证明。","snapshot":{"price_date":"2026-09-04","close":9.33,"ema20_bias_pct":6.31,"ret5_pct":4.01,"ret20_pct":9.25,"route":"BREAKOUT_TODAY","cycle":"IGNITION","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_603609","name":"禾丰股份","theme":"饲料、养殖链","group":"WATCH","note":"平台突破路径，不是首次回踩；原料涨价可能挤压成本。","snapshot":{"price_date":"2026-09-04","close":6.71,"ema20_bias_pct":4.48,"ret5_pct":2.76,"ret20_pct":8.4,"route":"BREAKOUT_TODAY","cycle":"MARKUP","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_600628","name":"新世界","theme":"零售、节前消费","group":"WATCH","note":"节前消费扩散观察，假期窗口不保证资金持续流入。","snapshot":{"price_date":"2026-09-04","close":6.44,"ema20_bias_pct":3.06,"ret5_pct":1.9,"ret20_pct":6.96,"route":"RECENT_BREAKOUT","cycle":"MARKUP","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_600027","name":"华电国际","theme":"发电、能源保供","group":"WATCH","note":"发电运营而非电力设备，偏稳健备选，不按高弹性埋伏处理。","snapshot":{"price_date":"2026-09-04","close":4.84,"ema20_bias_pct":3.89,"ret5_pct":2.98,"ret20_pct":3.64,"route":"BREAKOUT_TODAY","cycle":"PULLBACK","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_002734","name":"利民股份","theme":"农药、植保","group":"WATCH","note":"资金留存代理证据存在，17.09附近仍待有效突破和承接。","snapshot":{"price_date":"2026-09-04","close":16.8,"ema20_bias_pct":6.42,"ret5_pct":3.7,"ret20_pct":0.18,"route":"NEAR_BREAKOUT","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_603444","name":"吉比特","theme":"游戏、内容消费","group":"WATCH","note":"长时间整理后再转强；400附近有压力，不算干净的短周期首回踩。","snapshot":{"price_date":"2026-09-04","close":399.9,"ema20_bias_pct":4,"ret5_pct":3.05,"ret20_pct":4.5,"route":"EMA_RECLAIM_ONLY","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}}
+      ]
+    },
+    {
+      "id": "five_themes_20260904",
+      "title": "五方向精选",
+      "as_of": "2026-09-04",
+      "recorded_at": "2026-09-06",
+      "report": "FIVE_THEME_OPPORTUNITIES_20260904.md",
+      "records": [
+        {"symbol":"sz_002452","name":"长高电气","theme":"电力设备、输配电","group":"WATCH","note":"接近突破，11.97附近需有效越过并保持，不能提前称已启动。","snapshot":{"price_date":"2026-09-04","close":11.81,"ema20_bias_pct":3.06,"ret5_pct":2.7,"ret20_pct":2.7,"route":"NEAR_BREAKOUT","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_600312","name":"平高电气","theme":"电力设备、高压开关","group":"WATCH","note":"资金留存与供给代理证据存在；关注20.73附近突破，完整周期仍修复。","snapshot":{"price_date":"2026-09-04","close":20.38,"ema20_bias_pct":2.89,"ret5_pct":3.09,"ret20_pct":-0.44,"route":"EMA_RECLAIM_ONLY","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_000400","name":"许继电气","theme":"电力设备、智能电网","group":"WATCH","note":"先稳住均线并形成连续低点抬高，再看23.10附近结构。","snapshot":{"price_date":"2026-09-04","close":21.92,"ema20_bias_pct":0.12,"ret5_pct":0.32,"ret20_pct":-3.69,"route":"EMA_RECLAIM_ONLY","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_002734","name":"利民股份","theme":"农药、植保","group":"WATCH","note":"资金留存代理证据存在，17.09附近仍待有效突破和承接。","snapshot":{"price_date":"2026-09-04","close":16.8,"ema20_bias_pct":6.42,"ret5_pct":3.7,"ret20_pct":0.18,"route":"NEAR_BREAKOUT","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_603585","name":"苏利股份","theme":"农药、植保","group":"WATCH","note":"10.63附近仅勉强保持，等待再次增量；气候叙事不等于利润已兑现。","snapshot":{"price_date":"2026-09-04","close":10.66,"ema20_bias_pct":2.34,"ret5_pct":0.85,"ret20_pct":5.34,"route":"RECENT_BREAKOUT","cycle":"MARKUP","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_600598","name":"北大荒","theme":"种植、农业","group":"WATCH","note":"周度回落尚需止住，仅收复均线，不写成突破确认。","snapshot":{"price_date":"2026-09-04","close":13.11,"ema20_bias_pct":1.89,"ret5_pct":-2.31,"ret20_pct":8.71,"route":"EMA_RECLAIM_ONLY","cycle":"MARKUP","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_001330","name":"博纳影业","theme":"影视、AI短剧","group":"WATCH","note":"AI短剧业务仍早期；高换手伴随弱收盘与留存警示，需验证承接。","snapshot":{"price_date":"2026-09-04","close":5.77,"ema20_bias_pct":8.11,"ret5_pct":13.14,"ret20_pct":12.92,"route":"RECENT_BREAKOUT","cycle":"PULLBACK","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_601599","name":"浙文影业","theme":"影视、内容制作","group":"WATCH","note":"影视与纺织双主业，AI为探索；旧突破保持，继续看3.47附近结构。","snapshot":{"price_date":"2026-09-04","close":3.3,"ema20_bias_pct":4.74,"ret5_pct":4.76,"ret20_pct":9.27,"route":"RECENT_BREAKOUT","cycle":"MARKUP","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_300364","name":"中文在线","theme":"AIGC、内容IP、短剧","group":"WATCH","note":"题材代表跟踪，非本轮突破；归档时执行权限阻断，不是买入候选。","snapshot":{"price_date":"2026-09-04","close":25.71,"ema20_bias_pct":4.67,"ret5_pct":13.11,"ret20_pct":-4.64,"route":"NO_SETUP","cycle":"PULLBACK","engine_permission":"BLOCKED"}},
+        {"symbol":"sh_603686","name":"福龙马","theme":"无人驾驶、智能环卫","group":"WATCH","note":"低速场景应用；13.54附近压力能否转承接，资金留存尚未完整证明。","snapshot":{"price_date":"2026-09-04","close":13.72,"ema20_bias_pct":4.78,"ret5_pct":5.62,"ret20_pct":3.47,"route":"BREAKOUT_TODAY","cycle":"IGNITION","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_300698","name":"万马科技","theme":"车联网、连接服务","group":"WATCH","note":"接近突破，27.54附近待确认；连接服务不等同整车或算法龙头。","snapshot":{"price_date":"2026-09-04","close":27.17,"ema20_bias_pct":3.51,"ret5_pct":3.43,"ret20_pct":6.22,"route":"NEAR_BREAKOUT","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_300825","name":"阿尔特","theme":"汽车技术、无人场景","group":"WATCH","note":"已有周度明显涨幅，优先看整理承接，不当作低位未动补涨。","snapshot":{"price_date":"2026-09-04","close":12.52,"ema20_bias_pct":9.57,"ret5_pct":12.39,"ret20_pct":9.54,"route":"RECENT_BREAKOUT","cycle":"PULLBACK","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_000519","name":"中兵红箭","theme":"军工、超硬材料","group":"WATCH","note":"局部突破保持，关注15.24至15.30附近承接；大周期仍是启动后整理。","snapshot":{"price_date":"2026-09-04","close":15.8,"ema20_bias_pct":6.64,"ret5_pct":9.49,"ret20_pct":7.05,"route":"RECENT_BREAKOUT","cycle":"PULLBACK","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_000738","name":"航发控制","theme":"军工、航空发动机控制","group":"WATCH","note":"上涨延续，关注19.15至19.40附近承接；不是首次吸筹已获证明。","snapshot":{"price_date":"2026-09-04","close":19.58,"ema20_bias_pct":5.41,"ret5_pct":4.82,"ret20_pct":6.24,"route":"RECENT_BREAKOUT","cycle":"MARKUP","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_688543","name":"国科军工","theme":"军工、弹药动力","group":"WATCH","note":"事件位仍保持，近期前高未收复，先看回撤消化。","snapshot":{"price_date":"2026-09-04","close":42.89,"ema20_bias_pct":6.72,"ret5_pct":9.36,"ret20_pct":11.78,"route":"RECENT_BREAKOUT","cycle":"MARKUP","engine_permission":"MARKET_WATCH_ONLY"}}
+      ]
+    },
+    {
+      "id": "lurk_reserve_20260904",
+      "title": "潜伏预备",
+      "as_of": "2026-09-04",
+      "recorded_at": "2026-09-06",
+      "report": "FIVE_THEME_OPPORTUNITIES_20260904.md",
+      "records": [
+        {"symbol":"sh_600475","name":"华光环能","theme":"能源装备、环保","group":"RESERVE","note":"COILED潜伏预备；不是纯电网一次设备，先看修复转强。","snapshot":{"price_date":"2026-09-04","close":14.89,"ema20_bias_pct":-0.2,"ret5_pct":-1.78,"ret20_pct":1.92,"route":"NO_SETUP","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_301120","name":"新特电气","theme":"电力设备、变频变压器","group":"RESERVE","note":"ARMED潜伏资格与修复周期并存；未满足本轮价格突破，不等于正式触发。","snapshot":{"price_date":"2026-09-04","close":15.05,"ema20_bias_pct":0.05,"ret5_pct":1.21,"ret20_pct":-1.63,"route":"NO_SETUP","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_300515","name":"三德科技","theme":"仪器仪表、电力相关","group":"RESERVE","note":"READY载体资格；电力设备细分业务对应需核实，尚未价格突破。","snapshot":{"price_date":"2026-09-04","close":15.83,"ema20_bias_pct":-0.83,"ret5_pct":-1.8,"ret20_pct":-0.81,"route":"NO_SETUP","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_000887","name":"中鼎股份","theme":"汽车零部件","group":"RESERVE","note":"COILED潜伏预备；无人驾驶标签不等于核心受益证明。","snapshot":{"price_date":"2026-09-04","close":20.56,"ema20_bias_pct":-0.77,"ret5_pct":-1.86,"ret20_pct":6.36,"route":"NO_SETUP","cycle":"REBUILDING","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_300067","name":"安诺其","theme":"AIGC相关","group":"RESERVE","note":"ABSORBING载体资格与启动后整理并存；AI短剧业务贡献需另核。","snapshot":{"price_date":"2026-09-04","close":5.58,"ema20_bias_pct":1.81,"ret5_pct":0.9,"ret20_pct":0,"route":"NO_SETUP","cycle":"PULLBACK","engine_permission":"MARKET_WATCH_ONLY"}}
+      ]
+    },
+    {
+      "id": "combined_top5_20260904",
+      "title": "综合优选5只",
+      "as_of": "2026-09-04",
+      "recorded_at": "2026-09-06",
+      "report": "COMBINED_TOP5_STRUCTURE_20260904.md",
+      "records": [
+        {"symbol":"sz_000738","name":"航发控制","theme":"军工、航空发动机控制","group":"CORE_WATCH","note":"上涨延续，关注19.15至19.40附近承接；不是首次吸筹已获证明。","snapshot":{"price_date":"2026-09-04","close":19.58,"ema20_bias_pct":5.41,"ret5_pct":4.82,"ret20_pct":6.24,"route":"RECENT_BREAKOUT","cycle":"MARKUP","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_000519","name":"中兵红箭","theme":"军工、超硬材料","group":"CORE_WATCH","note":"局部突破保持，关注15.24至15.30附近承接；大周期仍是启动后整理。","snapshot":{"price_date":"2026-09-04","close":15.8,"ema20_bias_pct":6.64,"ret5_pct":9.49,"ret20_pct":7.05,"route":"RECENT_BREAKOUT","cycle":"PULLBACK","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_688023","name":"安恒信息","theme":"网络安全、AI安全","group":"CORE_WATCH","note":"局部放量突破；关注42.30至42.46附近承接，偏离已扩大，不追涨。","snapshot":{"price_date":"2026-09-04","close":43.07,"ema20_bias_pct":8.41,"ret5_pct":9.15,"ret20_pct":7.89,"route":"BREAKOUT_TODAY","cycle":"IGNITION","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sh_603686","name":"福龙马","theme":"无人驾驶、智能环卫","group":"CONDITIONAL_WATCH","note":"低速场景应用；13.54附近压力能否转承接，资金留存尚未完整证明。","snapshot":{"price_date":"2026-09-04","close":13.72,"ema20_bias_pct":4.78,"ret5_pct":5.62,"ret20_pct":3.47,"route":"BREAKOUT_TODAY","cycle":"IGNITION","engine_permission":"MARKET_WATCH_ONLY"}},
+        {"symbol":"sz_301252","name":"同星科技","theme":"液冷换热零部件","group":"CONDITIONAL_WATCH","note":"关注36.08至36.25附近承接；近期涨幅已大，液冷模组与批量零部件分开看。","snapshot":{"price_date":"2026-09-04","close":36.5,"ema20_bias_pct":6.14,"ret5_pct":4.02,"ret20_pct":18.74,"route":"RECENT_BREAKOUT","cycle":"PULLBACK","engine_permission":"MARKET_WATCH_ONLY"}}
+      ]
+    }
+  ]
+}

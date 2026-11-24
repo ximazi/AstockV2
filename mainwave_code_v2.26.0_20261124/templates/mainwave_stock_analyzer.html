@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>主升浪全周期分析台</title>
+  <script src="/vendor/plotly.min.js"></script>
+<script src="{{ url_for('static', filename='mainwave_analysis.js') }}?v=20260912-pv-shadow"></script>
+  <script src="{{ url_for('static', filename='mainwave_case_review.js') }}?v=20260909"></script>
+  <style>
+    :root {
+      --bg: #f5f6f3;
+      --surface: #ffffff;
+      --ink: #202421;
+      --muted: #69716b;
+      --line: #d9ded9;
+      --green: #16734a;
+      --green-soft: #e7f3ec;
+      --red: #b83a3a;
+      --red-soft: #f9e9e7;
+      --amber: #9a6518;
+      --amber-soft: #fbf0d9;
+      --blue: #326a8b;
+      --shadow: 0 1px 3px rgba(30, 40, 33, .08);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Microsoft YaHei", "PingFang SC", sans-serif; font-size: 14px; }
+    button, input { font: inherit; letter-spacing: 0; }
+    .topbar { min-height: 64px; display: flex; align-items: center; gap: 18px; padding: 10px 22px; color: #fff; background: #252b27; border-bottom: 3px solid var(--green); }
+    .brand { min-width: 205px; }
+    .brand strong { display: block; font-size: 18px; font-weight: 700; }
+    .brand span { color: #bdc7c0; font-size: 12px; }
+    .search { display: flex; gap: 8px; align-items: center; flex: 1; max-width: 690px; }
+    .search input { height: 38px; border: 1px solid #667069; background: #fff; color: var(--ink); padding: 0 11px; border-radius: 5px; outline: none; }
+    .search input:focus { border-color: #6ac395; box-shadow: 0 0 0 2px rgba(106,195,149,.18); }
+    #symbolInput { min-width: 210px; flex: 1; }
+    #dateInput { width: 155px; }
+    .search button { height: 38px; min-width: 82px; border: 0; border-radius: 5px; background: #2c9967; color: white; cursor: pointer; font-weight: 700; }
+    .search button:hover { background: #238457; }
+    .status { margin-left: auto; color: #d8ded9; white-space: nowrap; font-size: 12px; }
+    .layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); min-height: calc(100vh - 64px); }
+    .sidebar { background: var(--surface); border-right: 1px solid var(--line); min-width: 0; }
+    .sidebar-head { padding: 17px 16px 12px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; justify-content: space-between; }
+    .sidebar-head h2 { font-size: 15px; margin: 0; }
+    .sidebar-head span { color: var(--muted); font-size: 12px; }
+    .candidate-list { max-height: calc(100vh - 122px); overflow: auto; }
+    .candidate { width: 100%; border: 0; border-bottom: 1px solid #edf0ed; background: #fff; padding: 11px 15px; text-align: left; cursor: pointer; color: var(--ink); }
+    .candidate:hover, .candidate.active { background: #f0f6f2; }
+    .candidate-top { display: flex; align-items: center; gap: 8px; }
+    .candidate-rank { color: var(--muted); width: 19px; font-variant-numeric: tabular-nums; }
+    .candidate-name { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .candidate-tier { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #ecefec; }
+    .candidate-tier.a { color: var(--green); background: var(--green-soft); }
+    .candidate-tier.d { color: var(--red); background: var(--red-soft); }
+    .s4-banner { padding: 9px 15px; font-size: 12px; font-weight: 700; }
+    .s4-banner.red { background: #c00000; color: #fff; }
+    .s4-banner.green { background: var(--green-soft); color: var(--green); }
+    .s4-banner.amber { background: #fff4e0; color: #9a5b00; }
+    .list-divider { padding: 7px 15px; font-size: 12px; font-weight: 700; color: var(--muted); background: #f5f6f5; border-bottom: 1px solid #edf0ed; }
+    .list-divider.s4 { color: #1f3a8a; background: #eef2fb; }
+    .s4-levels { margin: 4px 0 0 27px; font-size: 11px; color: #1f3a8a; }
+    .candidate-meta { margin: 5px 0 0 27px; display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 11px; }
+    .workspace { min-width: 0; }
+    .empty { min-height: 420px; display: grid; place-items: center; color: var(--muted); }
+    .error { margin: 24px; padding: 16px; color: var(--red); border: 1px solid #e2aaa5; background: var(--red-soft); border-radius: 5px; }
+    .decision-band { display: grid; grid-template-columns: minmax(250px, 1fr) auto; gap: 16px; align-items: center; padding: 18px 22px; background: var(--surface); border-bottom: 1px solid var(--line); }
+    .identity-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+    .identity-line h1 { margin: 0; font-size: 24px; }
+    .identity-line .code { color: var(--muted); font-size: 13px; }
+    .identity-line .pool { padding: 3px 7px; border-radius: 4px; background: #edf0ed; color: #515a54; font-size: 11px; }
+    .decision-copy { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
+    .decision-copy strong { font-size: 16px; color: var(--green); }
+    .decision-copy .reason { color: var(--muted); }
+    .permission { min-width: 210px; text-align: right; }
+    .permission b { display: block; font-size: 14px; }
+    .permission span { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
+    .decision-band.risk .decision-copy strong, .decision-band.risk .permission b { color: var(--red); }
+    .decision-band.watch .decision-copy strong, .decision-band.watch .permission b { color: var(--amber); }
+    .metrics { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); background: var(--surface); border-bottom: 1px solid var(--line); }
+    .metric { min-height: 76px; padding: 13px 14px; border-right: 1px solid #e8ebe8; }
+    .metric:last-child { border-right: 0; }
+    .metric label { display: block; color: var(--muted); font-size: 11px; }
+    .metric strong { display: block; margin-top: 7px; font-size: 18px; font-variant-numeric: tabular-nums; }
+    .metric small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .positive { color: var(--red); }
+    .negative { color: var(--green); }
+    .section { background: var(--surface); border-bottom: 1px solid var(--line); padding: 17px 22px; }
+    .section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .section-head h2 { margin: 0; font-size: 15px; }
+    .section-head span { color: var(--muted); font-size: 11px; }
+    .lifecycle { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(80px, 1fr); overflow-x: auto; position: relative; }
+    .life-step { position: relative; text-align: center; padding-top: 23px; color: #8a918c; font-size: 11px; min-width: 0; }
+    .life-step::before { content: ""; position: absolute; z-index: 2; top: 4px; left: calc(50% - 6px); width: 12px; height: 12px; border: 2px solid #b9c0bb; background: #fff; border-radius: 50%; }
+    .life-step::after { content: ""; position: absolute; top: 10px; left: calc(-50% + 6px); width: calc(100% - 12px); height: 2px; background: #d6dbd7; }
+    .life-step:first-child::after { display: none; }
+    .life-step.past { color: #41755a; }
+    .life-step.past::before { border-color: #5b9a76; background: #5b9a76; }
+    .life-step.active { color: var(--ink); font-weight: 700; }
+    .life-step.active::before { width: 16px; height: 16px; top: 2px; left: calc(50% - 8px); border-color: var(--amber); background: #fff4d9; box-shadow: 0 0 0 3px rgba(154,101,24,.12); }
+    .life-step.late.active::before { border-color: var(--red); background: var(--red-soft); }
+    #priceChart { width: 100%; height: 600px; }
+    .details { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: var(--surface); border-bottom: 1px solid var(--line); }
+    .detail { padding: 18px 20px; border-right: 1px solid var(--line); min-width: 0; }
+    .detail:last-child { border-right: 0; }
+    .detail h2 { margin: 0 0 13px; font-size: 15px; }
+    .kv { display: grid; grid-template-columns: 115px minmax(0, 1fr); gap: 8px 10px; line-height: 1.45; }
+    .kv dt { color: var(--muted); }
+    .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+    .potential-range { margin: 14px 0 5px; height: 9px; background: #edf0ed; border-radius: 4px; overflow: hidden; }
+    .potential-range span { display: block; height: 100%; background: linear-gradient(90deg, #78a98d, #d49a42); }
+    .subtle { color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .tag-list { display: flex; flex-wrap: wrap; gap: 5px; }
+    .tag { border: 1px solid #d7ddd8; background: #fafbfa; border-radius: 4px; padding: 3px 6px; font-size: 11px; }
+    .table-section { background: var(--surface); padding: 18px 22px 26px; }
+    #discoveryAudit p { overflow-wrap: anywhere; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 3px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+    .tab { border: 0; background: transparent; padding: 9px 13px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; }
+    .tab.active { color: var(--ink); border-bottom-color: var(--green); font-weight: 700; }
+    .table-wrap { overflow: auto; max-height: 320px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { position: sticky; top: 0; background: #f4f6f4; color: #4f5852; text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    td { padding: 8px 10px; border-bottom: 1px solid #edf0ed; white-space: nowrap; }
+    .loading { opacity: .55; pointer-events: none; }
+    [hidden] { display: none !important; }
+    .analysis-state { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 14px 0; }
+    .analysis-state dt { color: var(--muted); font-size: 12px; }
+    .analysis-state dd { margin: 5px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+    .analysis-state time { white-space: nowrap; }
+    .analysis-boundary { display: flex; flex-wrap: wrap; gap: 10px 24px; border-top: 1px solid var(--line); padding-top: 12px; }
+    .analysis-next { line-height: 1.7; overflow-wrap: anywhere; }
+    .analysis-detail { border-top: 1px solid var(--line); padding: 12px 0; }
+    .analysis-detail summary { cursor: pointer; line-height: 1.7; }
+    .analysis-detail p { line-height: 1.7; overflow-wrap: anywhere; }
+    .analysis-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; padding-top: 8px; }
+    .analysis-check { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid #edf0ed; line-height: 1.5; }
+    .analysis-check span { min-width: 0; overflow-wrap: anywhere; }
+    .analysis-check b { flex-shrink: 0; font-size: 12px; }
+    .evidence-comparison { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
+    .check-pass { color: var(--green); }
+    .check-fail { color: var(--red); }
+    .check-unknown, .check-wait { color: var(--amber); }
+    .dimension-row { border-bottom: 1px solid var(--line); padding: 10px 0; }
+    .dimension-row summary span { margin-left: 16px; color: var(--muted); }
+    .dimension-row pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
+    .dimension-row p, .analysis-detail li { line-height: 1.7; overflow-wrap: anywhere; }
+    @media (max-width: 820px) { .analysis-state { grid-template-columns: repeat(2, minmax(0, 1fr)); } .analysis-checks { grid-template-columns: minmax(0, 1fr); } }
+    .source-tabs { display: flex; border-bottom: 1px solid var(--line); }
+    .source-tab { flex: 1; min-width: 0; padding: 12px 4px; border: 0; border-bottom: 2px solid transparent; background: #fff; cursor: pointer; }
+    .source-tab.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 700; }
+    .case-banner { background: #edf3f7; padding: 14px 22px; border-bottom: 1px solid #ccdae3; line-height: 1.6; }
+    .case-banner p { margin: 4px 0 0; }
+    .case-route-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; padding: 0; margin: 12px 0; list-style-position: inside; border-block: 1px solid var(--line); }
+    .case-route-steps li { padding: 12px; border-right: 1px solid var(--line); line-height: 1.7; overflow-wrap: anywhere; }
+    .case-route-steps li:last-child { border-right: 0; }
+    #caseReview p, #caseReview li { overflow-wrap: anywhere; }
+    #routeDefinitions { padding: 10px 16px; border-bottom: 1px solid var(--line); line-height: 1.65; }
+    #routeDefinitions p { font-size: 12px; margin: 8px 0; }
+    @media (max-width: 1100px) { .case-route-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 480px) { .case-route-steps { grid-template-columns: minmax(0, 1fr); } .case-route-steps li { border-right: 0; border-bottom: 1px solid var(--line); } }
+    .stage-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0; font-size: 12px; color: #38423d; }
+    .stage-legend span { display: inline-flex; gap: 5px; align-items: center; }
+    .stage-legend i { width: 18px; height: 12px; border: 1px solid; }
+    .stage-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font-size: 12px; }
+    .stage-controls label { display: inline-flex; align-items: center; gap: 5px; }
+    .stage-controls input[type=range] { width: 90px; accent-color: var(--blue); }
+    .stage-controls output { min-width: 32px; font-variant-numeric: tabular-nums; }
+    .stage-readout { display: flex; flex-wrap: wrap; gap: 5px 12px; align-items: center; min-height: 38px; padding: 8px 10px; margin: 10px 0 4px; background: #f4f6f8; border-left: 4px solid #4b6475; line-height: 1.5; font-size: 12px; }
+    .observation { display: flex; flex-wrap: wrap; gap: 10px 24px; padding-top: 10px; font-size: 12px; line-height: 1.6; }
+    .observation span { overflow-wrap: anywhere; }
+    .case-filter { margin: 12px 16px; max-width: calc(100% - 32px); padding: 6px; border: 1px solid var(--line); background: white; }
+    .selection-filters { display: grid; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+    .selection-filters input, .selection-filters select { width: 100%; min-width: 0; min-height: 36px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; background: white; font: inherit; }
+    .selection-filters p { margin: 0; }
+    .selection-list { max-height: calc(100vh - 330px); }
+    .selection-list .candidate-meta { margin-left: 0; gap: 4px 10px; }
+    .selection-list .candidate-tier { flex-shrink: 0; }
+    .selection-list .candidate-tier.conditional { color: var(--amber); background: var(--amber-soft); }
+    .selection-list .candidate-tier.reserve { color: var(--blue); background: #edf3f7; }
+    .selection-history { background: #f7f9fb; }
+    .selection-history .section-head { margin-bottom: 8px; }
+    .selection-history .table-wrap { max-height: 240px; }
+    .selection-history .review-note { white-space: normal; min-width: 230px; max-width: 480px; line-height: 1.6; }
+    .milestones { line-height: 1.8; margin: 0; padding-left: 18px; }
+    .etf-overview summary { cursor: pointer; font-weight: 700; margin-bottom: 12px; }
+    .etf-overview .table-wrap { max-height: 430px; }
+    .etf-link { padding: 4px 0; border: 0; background: transparent; color: var(--blue); cursor: pointer; text-decoration: underline; }
+    .etf-notes { margin: 0; padding-left: 18px; line-height: 1.7; }
+    @media (max-width: 1100px) {
+      .metrics { grid-template-columns: repeat(4, 1fr); }
+      .metric:nth-child(4) { border-right: 0; }
+      .details { grid-template-columns: 1fr 1fr; }
+      .detail:nth-child(2) { border-right: 0; }
+      .detail:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); }
+    }
+    @media (max-width: 820px) {
+      .topbar { align-items: flex-start; flex-wrap: wrap; padding: 11px 14px; }
+      .brand { min-width: 100%; }
+      .search { min-width: 100%; flex-wrap: wrap; }
+      #symbolInput { min-width: 160px; }
+      .status { display: none; }
+      .layout { display: block; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+      .candidate-list { display: flex; overflow-x: auto; max-height: none; }
+      .candidate { min-width: 220px; border-right: 1px solid #edf0ed; }
+      .candidate { max-width: 290px; flex-shrink: 0; }
+      .selection-list { display: block; max-height: 280px; overflow-y: auto; }
+      .selection-list .candidate { max-width: none; min-width: 0; }
+      .source-tab { min-height: 44px; }
+      .case-banner { padding: 12px 16px; }
+      .decision-band { grid-template-columns: 1fr; padding: 16px; }
+      .permission { text-align: left; }
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .metric { border-bottom: 1px solid #e8ebe8; }
+      .metric:nth-child(even) { border-right: 0; }
+      .section { padding: 16px; }
+      .lifecycle { grid-auto-columns: 100px; padding-bottom: 7px; }
+      #priceChart { height: 640px; }
+      .details { grid-template-columns: 1fr; }
+      .detail, .detail:nth-child(2), .detail:last-child { grid-column: auto; border-right: 0; border-top: 1px solid var(--line); }
+      .table-section { padding: 16px; }
+    }
+  </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='mainwave_review_workbench.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='mainwave_virtual_portfolio.css', v='2.23.0') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><strong>主升浪全周期分析台</strong><span>候选价值 · 生命周期 · 价格量能 · 题材风险</span></div>
+    <form class="search" id="searchForm">
+      <input id="symbolInput" name="symbol" autocomplete="off" placeholder="输入股票代码，如 600325" aria-label="股票代码">
+      <input id="dateInput" type="date" value="{{ report_date }}" aria-label="分析日期">
+      <button type="submit">分析</button>
+    </form>
+    <div class="status" id="runStatus">日报 {{ report_date }}</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <a class="source-tab" href="/trading" style="display:block;text-align:center;text-decoration:none;margin-bottom:8px">机会与模拟交易</a>
+      <a class="source-tab" href="/limit-themes" style="display:block;text-align:center;text-decoration:none;margin-bottom:8px">涨停股概念归因</a>
+      <a class="source-tab" href="/intraday" style="display:block;text-align:center;text-decoration:none;margin-bottom:8px">尾盘决策</a>
+      <nav class="source-tabs" aria-label="分析来源"><button class="source-tab active" id="dailySource" aria-pressed="true">每日候选</button><button class="source-tab" id="portfolioSource" aria-pressed="false">虚拟持仓</button><button class="source-tab" id="selectionSource" aria-pressed="false">筛选榜单</button><button class="source-tab" id="historySource" aria-pressed="false">历史案例</button><button class="source-tab" id="etfSource" aria-pressed="false">ETF周期</button><button class="source-tab" id="reviewSource" aria-pressed="false">案例复盘</button><button class="source-tab" id="s4Source" aria-pressed="false">S4 回踩再启动</button><button class="source-tab" id="s3Source" aria-pressed="false">S3 平台突破（研究）</button><button class="source-tab" id="s1Source" aria-pressed="false">S1 新结构突破（研究）</button><button class="source-tab" id="s2Source" aria-pressed="false">S2 调整后再转强（研究）</button><button class="source-tab" id="s5Source" aria-pressed="false">S5 底部反转（研究）</button></nav>
+      <select id="etfFilter" class="case-filter" aria-label="ETF观察分类" hidden><option value="all">全部10只</option><option value="priority">参与价值候选</option><option value="strong">强势趋势</option><option value="hot">正偏离过热</option><option value="oversold">负偏离超调</option></select>
+      <div class="sidebar-head"><h2 id="listTitle">今日机会</h2><span id="candidateDate">{{ report_date }}</span></div>
+      <select class="case-filter" id="caseFilter" aria-label="案例类型" hidden><option value="ALL">全部历史案例</option><option value="DISCOVERY_HIT">旧审计曾命中</option><option value="DISCOVERY_MISS">旧审计漏检对照</option><option value="COMPLETE">闭合周期（含修复）</option><option value="FAILED_LAUNCH">启动失败对照</option></select>
+      <select class="case-filter" id="caseRouteFilter" aria-label="案例复核线路" hidden><option value="ALL">全部复核线路</option><option value="R1">线路一 · 点火个股反查</option><option value="R2">线路二 · 个股先行埋伏</option><option value="R3">线路三 · 题材传播承接</option></select>
+      <details id="routeDefinitions" hidden><summary>三条线路定义与案例数量</summary><div id="routeDefinitionText"></div></details>
+      <div class="selection-filters" id="selectionFilters" hidden>
+        <select id="selectionBatch" aria-label="筛选批次"><option value="ALL">全部筛选批次</option></select>
+        <input id="selectionSearch" type="search" placeholder="股票代码、名称或题材" aria-label="搜索筛选榜单">
+        <p class="subtle" id="selectionCount"></p>
+        <p class="subtle">研究观察归档 · 非实时买入榜</p>
+      </div>
+      <div class="candidate-list" id="candidateList"></div>
+    </aside>
+    <main class="workspace" id="workspace">
+      <div class="empty">选择候选或输入股票代码</div>
+    </main>
+  </div>
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+    const num = (value, digits = 1) => value != null && value !== '' && Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '--';
+    const pctClass = (value) => Number(value) > 0 ? 'positive' : (Number(value) < 0 ? 'negative' : '');
+    let activeSymbol = '';
+    let analysisRequest = 0;
+    let currentData = null;
+    let sourceMode = 'daily';
+    let historyLibrary = null;
+    let selectionLibrary = null;
+    let activeCase = '';
+    let showStageBackground = true;
+    let stageOpacity = .30;
+    const stagePalette = {
+      WATCH:'#697686', PROBED:'#3979b0', ABSORBING:'#3979b0', COILED:'#355fb0', ARMED:'#355fb0', READY:'#355fb0',
+      IGNITION:'#008d87', MARKUP:'#cf405a', PULLBACK:'#c9a02b', OVERHEATED:'#d97928',
+      DISTRIBUTION_RISK:'#95509d', FAILED:'#4b6475', REBUILDING:'#438351',
+    };
+    const stageShortLabels = {WATCH:'观察', PROBED:'试探', ABSORBING:'蓄势', COILED:'收敛', ARMED:'准备', READY:'待触发', IGNITION:'启动', MARKUP:'上涨', PULLBACK:'整理', OVERHEATED:'过热', DISTRIBUTION_RISK:'派发风险', FAILED:'结构失效', REBUILDING:'修复'};
+    const latestDailyDate = '{{ report_date }}';
+
+    async function getJson(url) {
+      const response = await fetch(url);
+      const body = await response.json();
+      if (!response.ok || body.error) throw new Error(body.error || `HTTP ${response.status}`);
+      return body;
+    }
+
+    async function loadCandidates() {
+      if (sourceMode === 'portfolio') return loadVirtualPositions();
+      if (sourceMode === 'review') return loadReviewCases();
+      if (sourceMode === 'etf') return loadEtfs();
+      if (sourceMode === 'history') return loadHistoryCases();
+      if (sourceMode === 'selections') return loadSelections();
+      if (/^s[1-5]$/.test(sourceMode)) return loadScenario(sourceMode);
+      const date = $('#dateInput').value;
+      const data = await getJson(`/api/candidates?date=${encodeURIComponent(date)}`);
+      const s4 = await getJson(`/api/s4?date=${encodeURIComponent(data.report_date)}`);
+      await refreshVirtualLibrary();
+      if (sourceMode !== 'daily') return;
+      $('#candidateDate').textContent = data.report_date;
+      $('#candidateList').innerHTML = renderS4(s4, data.report_date) + '<div class="list-divider">观察榜 · 排序未验证（不是推荐）</div>' + data.records.map(row => {
+        const tier = row.value_tier === 'PRIORITY_REVIEW' ? 'a' : (row.value_tier === 'RISK_WATCH' ? 'd' : '');
+        return `<div class="daily-candidate"><button class="candidate ${row.symbol === activeSymbol ? 'active' : ''}" data-symbol="${esc(row.symbol)}">
+          <div class="candidate-top"><span class="candidate-rank">${esc(row.value_rank)}</span><span class="candidate-name">${esc(row.name || row.symbol)}</span><span class="candidate-tier ${tier}">${esc(row.value_tier_label || '')}</span></div>
+          <div class="candidate-meta"><span>${esc(row.route_ids || '')}</span><span>${esc(row.belonging_theme || '未确认题材')}</span><span>${esc(row.stock_lifecycle_label || '')}</span><span>${esc(({S1:'启动前准备', S2:'首次突破回踩', S3:'趋势内后续整理', S4:'突破接受确认', S5:'区间均值回归', S6:'超跌修复'})[row.active_strategy] || '')}</span><span>${esc(row.price_volume_label || '')}</span></div>
+        </button>${paperAddMarkup(row.symbol, data.report_date, row.close)}</div>`;
+      }).join('') || '<div class="empty">当前没有候选</div>';
+      document.querySelectorAll('.candidate').forEach(button => button.addEventListener('click', () => {
+        $('#symbolInput').value = button.dataset.symbol;
+        runAnalysis(button.dataset.symbol);
+      }));
+    }
+
+    function renderS4(s4, date) {
+      if (s4.missing) return '<div class="s4-banner amber">S4 扫描结果缺失：先运行 daily_full 或 python -m mainwave_engine.s4_scan</div>';
+      const m = s4.market_risk || {};
+      const w = s4.market_warning || {};
+      const banner = (m.level === 'TREND_EXIT' ? `<div class="s4-banner red">🔴 大盘趋势清仓中：不建议新开仓</div>`
+        : m.level === 'CRITICAL' ? `<div class="s4-banner amber">🟠 大盘趋势临界（明日平收 MA20 即下拐）：不建议新开仓</div>`
+        : m.level === 'NORMAL' ? `<div class="s4-banner green">🟢 大盘趋势未破坏</div>` : `<div class="s4-banner amber">🟠 大盘状态未确认</div>`)
+        + (w.level === 'WARNING' ? `<div class="s4-banner amber">🟠 短期回调预警：${esc((w.indices || []).filter(r => r.level === 'WARNING').map(r => `${r.index} ${r.text}`).join('；'))}</div>` : '');
+      const rows = (s4.recommended || []).map(r => `<div class="daily-candidate"><button class="candidate ${r.symbol === activeSymbol ? 'active' : ''}" data-symbol="${esc(r.symbol)}">
+          <div class="candidate-top"><span class="candidate-rank">${esc(r.rank)}</span><span class="candidate-name">${esc(r.name || r.symbol)}</span><span class="candidate-tier a">S4 形态候选</span></div>
+          <div class="candidate-meta"><span>${esc(r.industry || '')}</span><span>涨 ${num(r.pct,1)}%</span><span>偏离EMA20 ${num(r.bias_ema20,1)}%</span><span>距60日高 ${num(r.dd60,1)}%</span><span>行业内强度 ${r.lead == null ? '—' : Math.round(r.lead * 100) + '%'}</span></div>
+          <div class="s4-levels">止损 ${esc(r.plan.stop)} · 止盈 ${esc(r.plan.tp1)} / ${esc(r.plan.tp2)} · 分批止盈离场</div>
+          ${r.plan.denial ? `<div class="s4-levels">否定即走：${esc(r.plan.denial)}</div>` : ''}
+        </button>${s4.buy_advised === true && m.level === 'NORMAL' && m.as_of === date ? paperAddMarkup(r.symbol, date, r.close, false, 'S4_LAD') : '<div class="s4-levels">等待市场许可；不能新增 S4 持仓</div>'}</div>`).join('');
+      const excluded = (s4.excluded || []).length ? `<div class="s4-levels" style="margin:6px 15px">已排除 ${s4.excluded.length} 只：${s4.excluded.map(r => `${esc(r.name)}（${esc(r.excluded.join('、'))}）`).join('；')}</div>` : '';
+      return banner + `<a class="source-tab" style="display:block;text-align:center;text-decoration:none" href="/api/scenario-export?date=${encodeURIComponent(date)}">导出当天 S1–S5 机会点（CSV）</a>`
+        + `<div class="list-divider s4">S4 形态候选 · 入场许可另行复核（行业内强度排序，弱依据）</div>` + (rows || '<div class="empty">今日无 S4 形态候选</div>') + excluded;
+    }
+
+    let scenarioData = null;
+    const SCENARIO_INFO = {
+      s4: {title: 'S4 回踩 EMA20 再启动', status: '已上线：每日推荐，人工选择记入虚拟持仓', rows: [
+        ['信号', '趋势（MA20>MA60、MA60 上行、收盘>MA60）；近 10 日碰到 EMA20 且守住、没有收破 0.97 倍；此前有过 ≥8% 的上涨；当日涨 ≥2%、收盘创 5 日新高、站上 5 日线、偏离 EMA20 ≤12%'],
+        ['排除', 'R1 顶背离；R2 MACD 绿柱放大；R3 比 60 日高点低 15% 以上'],
+        ['事件', '同一次回踩只出一次首仓信号；没有新的 EMA20 触及的再启动算旧事件进展；已记入过持仓的事件不再推荐，止损后要等新的回踩'],
+        ['排序', '行业内 20 日强度（弱依据，只在 2026 年有区分）'],
+        ['离场', '−10% 止损；+10%、+20% 各卖 1/3；3 日内收盘低于信号日开盘卖一半；收破回踩低点或 5 日内两次收于 EMA20 下卖出剩余；两日收破 EMA20×0.97 或盈利 10% 后放量出货信号卖出；最长 60 日'],
+        ['研究数据', '20 日先到 +10%：2025 年 45.8%、2026 年 48.2%（随机基准 38.0%、33.0%）；分批止盈 + 否定即走：平均 1.49% / 0.56%，亏损超 8% 的占比 20% / 26%'],
+        ['文档', 'S4研究总结_20260925.md、S4离场研究_20260925.md、外部复核评估与决策_20260926.md']]},
+      s3: {title: 'S3 平台突破', status: '研究场景，未上线：只观察，不推荐，不能记入虚拟持仓', rows: [
+        ['信号', '趋势（同 S4）；整理 ≥7 天、振幅 <15%；收盘突破整理上沿且当日上涨；整理期缩量（≤整理前 20 日均量 0.8 倍）、当日量 ≥ 整理均量 2 倍；不过热、无顶背离'],
+        ['结构分类', '长平台释放（此前无大涨、整理 ≥15 天）/ 趋势内整理释放 / 受损后修复（大涨后回撤 ≥20%、仍低于前高 12% 以上，只降级不排除）/ 其他'],
+        ['离场（上线时）', '分批止盈 + 平台否定：5 日内两次收盘回到平台上沿下卖一半，10 日内收破平台中线卖出剩余'],
+        ['研究数据', '长平台释放止损率 12% / 15%（2025 / 2026，样本少）；受损后修复 2025 年最弱（分批止盈平均 0.7%）；位置规律 2025 年成立、2026 年未复现'],
+        ['不做', '不设"低位 + 120 日新高"硬门槛（会删掉 9 个成功案例）'],
+        ['文档', 'S3场景分析_20260925.md、外部复核评估与决策_20260926.md']]},
+      s1: {title: 'S1 新结构突破', status: '研究场景，未上线：只观察，不推荐，不能记入虚拟持仓', rows: [
+        ['信号', '强势趋势核心的突破入口（CT20）：收盘突破此前 20 日最高价；主板、非 ST'],
+        ['离场（上线时）', '分批止盈 + P3：买入后 5 日内两次收盘跌破信号日低点，次日开盘卖出'],
+        ['执行', '次日开盘高于计划买价上限（信号收盘 + 0.5 ATR）即过期，不追'],
+        ['不采用', 'P1（次日开盘跌回突破边界下就暂停）：全样本无效果；MA60 下行禁买、MA20 必须上行等硬门槛：误伤赢家'],
+        ['研究数据', '分批止盈每信号平均 2.69% / −0.52%（2025 / 2026）；加 P3 后 2.32% / −0.35%，亏损超 8% 的占比从 24.9% / 38.7% 降到 19.8% / 30.7%'],
+        ['文档', 'S1S5评审落实_20260926.md、S1S2S5案例图谱_20260926.md']]},
+      s2: {title: 'S2 调整后再转强', status: '研究场景，未上线：只观察，不推荐，不能记入虚拟持仓', rows: [
+        ['信号', '强势趋势核心的再加速入口（RA3）：调整之后重新转强；主板、非 ST'],
+        ['离场（上线时）', '分批止盈 + P3：买入后 5 日内两次收盘跌破信号日低点，次日开盘卖出（S2 全样本：亏损超 8% 的占比 28.3% / 39.7% 降到 22.1% / 31.0%）'],
+        ['执行', '次日开盘高于计划买价上限（信号收盘 + 0.5 ATR）即过期，不追；作为筛选条件全样本无效果，只作执行约束'],
+        ['不采用', '恢复未完成就等待（收盘在下行的 EMA20 下）：全样本无效果；倍量、涨幅 ≥3%、20 日新高、S5 的底部稳定条件：误伤赢家'],
+        ['待研究', '需要正式的 RA3 结构锚点（前段推进、调整起止、触发边界）才能区分旧推进的延伸和新的独立整理'],
+        ['研究数据', '20 日先到 +10%：2025 年 40.1%、2026 年 41.1%（随机基准 38.0%、33.0%）；收盘在 MA60 下的信号分批止盈收益并不差'],
+        ['文档', 'S1S2S5案例图谱_20260926.md']]},
+      s5: {title: 'S5 底部反转（MA20>MA60）', status: '研究场景，未上线：只观察，不推荐，不能记入虚拟持仓', rows: [
+        ['信号', '此前 120 日高点下跌 ≥20%；下跌放缓、缩量、窄幅整理；MACD 在零轴附近金叉；放量 ≥1.3 倍、站上 MA20，且 MA20>MA60'],
+        ['离场', '分批止盈；信号低点止错会误伤 S5 赢家（诚邦股份、潞化科技），不采用'],
+        ['不采用', 'P2（底部仍在下探且放量放波动就暂缓）：2025 年放弃了 30 个赢家，平均收益从 4.43% 降到 3.17%'],
+        ['研究数据', '样本少：2025 年 277、2026 年 30 个信号；失败案例中有 4 个集中在 2025 年 4 月初的大盘急跌'],
+        ['文档', 'S1S5评审落实_20260926.md']]},
+    };
+
+    async function loadScenario(kind) {
+      const date = $('#dateInput').value || latestDailyDate;
+      scenarioData = await getJson(`/api/scenario/${kind}?date=${encodeURIComponent(date)}`);
+      await refreshVirtualLibrary();
+      if (sourceMode !== kind) return;
+      $('#candidateDate').textContent = date;
+      const head = `<button class="paper-overview" data-scenario-overview="${kind}">场景总览与今日明细</button>
+        <a class="source-tab" style="display:block;text-align:center;text-decoration:none" href="/scenario-cases/${kind}" target="_blank" rel="noopener">案例图谱（成功 / 失败案例）</a>
+        <a class="source-tab" style="display:block;text-align:center;text-decoration:none" href="/api/scenario-export?date=${encodeURIComponent(date)}">导出当天 S1–S5 机会点（CSV）</a>`;
+      if (scenarioData.missing) {
+        $('#candidateList').innerHTML = head + `<div class="empty">${esc(date)} 没有${kind.toUpperCase()}扫描结果。运行 python -m mainwave_engine.${kind}_scan --date ${esc(date)}</div>`;
+        return;
+      }
+      const item = (r, tag, cls) => `<div class="daily-candidate"><button class="candidate" data-symbol="${esc(r.symbol)}">
+          <div class="candidate-top"><span class="candidate-rank">${esc(r.rank || '')}</span><span class="candidate-name">${esc(r.name || r.symbol)}</span><span class="candidate-tier ${cls}">${esc(tag)}</span></div>
+          <div class="candidate-meta"><span>${esc(r.industry || '')}</span><span>涨 ${num(r.pct,1)}%</span>${r.bias_ema20 != null ? `<span>偏离EMA20 ${num(r.bias_ema20,1)}%</span>` : ''}${r.base_len ? `<span>整理 ${esc(r.base_len)} 日</span>` : ''}</div>
+          ${r.plan ? `<div class="s4-levels">止损 ${esc(r.plan.stop)} · 止盈 ${esc(r.plan.tp1)} / ${esc(r.plan.tp2)}</div>` : ''}
+        </button>${kind === 's4' && tag === 'S4 形态候选' && scenarioData.buy_advised === true && scenarioData.market_risk?.level === 'NORMAL' && scenarioData.market_risk?.as_of === date ? paperAddMarkup(r.symbol, scenarioData.as_of, r.close, false, 'S4_LAD') : ''}</div>`;
+      let body = '';
+      if (kind === 's4') {
+        body = `<div class="list-divider s4">形态候选 ${scenarioData.recommended.length}（入场许可另行复核）</div>` + (scenarioData.recommended.map(r => item(r, 'S4 形态候选', 'a')).join('') || '<div class="empty">无</div>')
+          + `<div class="list-divider">排除 / 旧事件进展 ${scenarioData.excluded.length}</div>` + scenarioData.excluded.map(r => item(r, r.excluded[0].slice(0, 8), 'd')).join('');
+      } else {
+        const miss = scenarioData.missing_source ? `<div class="empty">${esc(scenarioData.missing_source)}</div>` : '';
+        body = miss + `<div class="list-divider">观察 ${scenarioData.observations.length}（研究，不推荐）</div>` + (scenarioData.observations.map(r => item(r, r.structure || r.tag, r.structure === '受损后修复' ? 'd' : '')).join('') || `<div class="empty">今日无 ${kind.toUpperCase()} 信号</div>`);
+      }
+      $('#candidateList').innerHTML = head + body;
+      document.querySelectorAll('#candidateList .candidate').forEach(button => button.addEventListener('click', () => {
+        $('#symbolInput').value = button.dataset.symbol;
+        runAnalysis(button.dataset.symbol);
+      }));
+    }
+
+    function renderScenarioOverview(kind) {
+      const info = SCENARIO_INFO[kind], d = scenarioData || {};
+      const m = d.market_risk || {};
+      const market = m.level ? `<div class="s4-banner ${m.level === 'TREND_EXIT' ? 'red' : m.level === 'NORMAL' ? 'green' : 'amber'}">${esc(m.text || '')}</div>` : '';
+      const rules = info.rows.map(([k, v]) => `<tr><th style="white-space:nowrap">${esc(k)}</th><td>${esc(v)}</td></tr>`).join('');
+      let today = '<div class="empty">当日无扫描结果</div>';
+      if (!d.missing && kind === 's4') {
+        const rows = [...(d.recommended || []).map(r => ['推荐', r]), ...(d.excluded || []).map(r => [r.excluded.join('；'), r])];
+        today = rows.length ? `<table><thead><tr><th>股票</th><th>状态</th><th>涨幅</th><th>偏离EMA20</th><th>距60日高</th><th>触及日 / 回踩低点</th><th>止损 / 止盈</th><th>否定即走</th></tr></thead><tbody>${rows.map(([st, r]) => `<tr><td><b>${esc(r.name)}</b><small>${esc(r.symbol)}</small></td><td>${esc(st)}</td><td>${num(r.pct,1)}%</td><td>${num(r.bias_ema20,1)}%</td><td>${num(r.dd60,1)}%</td><td>${esc(r.event?.touch_day || '')}<small>${esc(r.event?.pullback_low ?? '')}</small></td><td>${esc(r.plan?.stop)}<small>${esc(r.plan?.tp1)} / ${esc(r.plan?.tp2)}</small></td><td><small>${esc(r.plan?.denial || '')}</small></td></tr>`).join('')}</tbody></table>` : '<div class="empty">今日无 S4 信号</div>';
+      } else if (!d.missing && kind !== 's3') {
+        const rows = d.observations || [];
+        today = rows.length ? `<table><thead><tr><th>股票</th><th>类型</th><th>涨幅</th><th>止损 / 止盈</th><th>否定即走</th><th>买价上限</th><th>说明</th></tr></thead><tbody>${rows.map(r => `<tr><td><b>${esc(r.name)}</b><small>${esc(r.symbol)} ${esc(r.industry || '')}</small></td><td>${esc(r.tag)}</td><td>${num(r.pct,1)}%</td><td>${esc(r.plan.stop)}<small>${esc(r.plan.tp1)} / ${esc(r.plan.tp2)}</small></td><td><small>${esc(r.plan.denial)}</small></td><td><small>${esc(r.plan.price_cap || '')}</small></td><td><small>${esc(r.note || '')}</small></td></tr>`).join('')}</tbody></table>` : `<div class="empty">${esc(d.missing_source || '今日无信号')}</div>`;
+      } else if (!d.missing) {
+        const rows = d.observations || [];
+        today = rows.length ? `<table><thead><tr><th>股票</th><th>结构</th><th>整理</th><th>整理量/前量</th><th>信号量/整理量</th><th>距前高</th><th>平台上沿 / 中线</th><th>否定即走</th></tr></thead><tbody>${rows.map(r => `<tr><td><b>${esc(r.name)}</b><small>${esc(r.symbol)}</small></td><td>${esc(r.structure)}<small>${esc(r.structure_note)}</small></td><td>${esc(r.base_len)} 日 / ${num(r.base_amp,1)}%</td><td>${num(r.vol_base_pre,2)}</td><td>${num(r.vol_sig_base,2)}</td><td>${num(r.below_peak,1)}%</td><td>${esc(r.base_top)} / ${esc(r.base_mid)}</td><td><small>${esc(r.plan.denial)}</small></td></tr>`).join('')}</tbody></table>` : '<div class="empty">今日无 S3 信号</div>';
+      }
+      $('#workspace').innerHTML = `<section class="section"><div class="section-head"><h1>${esc(info.title)}</h1><span>${esc(info.status)}</span></div>${market}
+        <p><a href="/scenario-cases/${kind}" target="_blank" rel="noopener">打开案例图谱（成功 / 失败案例，K 线 + MACD）</a> · <a href="/api/scenario-export?date=${encodeURIComponent(d.as_of || latestDailyDate)}">导出当天 S1–S5 机会点（CSV）</a></p>
+        <div class="table-wrap"><table><tbody>${rules}</tbody></table></div></section>
+        <section class="section"><div class="section-head"><h2>${esc(d.as_of || '')} 明细</h2><span>${esc(d.notice || '')}</span></div><div class="table-wrap">${today}</div></section>`;
+    }
+
+    async function loadHistoryCases() {
+      historyLibrary = await getJson('/api/history-cases');
+      $('#candidateDate').textContent = historyLibrary.as_of;
+      if (historyLibrary.stale) {
+        $('#candidateList').innerHTML = '<div class="error">案例版本已过期，需重新构建。</div>';
+        return;
+      }
+      const kind = $('#caseFilter').value;
+      const route = $('#caseRouteFilter').value;
+      $('#routeDefinitionText').innerHTML = Object.entries(historyLibrary.routes || {}).map(([id, definition]) => `<p><b>${esc(definition.label)} · ${historyLibrary.cases.filter(r=>r.review_summary?.route_id === id).length} 例</b><br>${definition.steps.map(esc).join('<br>')}</p>`).join('') + '<p>按复核线路归类，不代表当时生产发现归属；没有带日期证据的线路不补造案例。</p>';
+      $('#candidateList').innerHTML = historyLibrary.cases.filter(row => (kind === 'ALL' || row.category === kind) && (route === 'ALL' || row.review_summary?.route_id === route)).map(row => `
+        <button class="candidate ${row.id === activeCase ? 'active' : ''}" data-case="${esc(row.id)}">
+          <div class="candidate-top"><span class="candidate-name">${esc(row.name)}</span><span class="candidate-tier ${row.category === 'FAILED_LAUNCH' ? 'd' : ''}">${esc(row.category_label)}</span></div>
+          <div class="candidate-meta" style="margin-left:0"><span>${esc(row.symbol)}</span><span>${esc(row.theme || row.industry)}</span><span>${esc(row.window_start || row.start)} 至 ${esc(row.window_end)}</span></div>
+          <div class="candidate-meta" style="margin-left:0"><b>${esc(row.review_summary?.route_label || '线路未核验')}</b></div>
+        </button>`).join('') || '<div class="empty">暂无该线路 / 类型的已归档案例，不补造发现证据</div>';
+      if (!document.querySelector('[data-case]')) $('#workspace').innerHTML = '<div class="empty">当前筛选没有已归档案例</div>';
+      document.querySelectorAll('[data-case]').forEach(button => button.addEventListener('click', () => runCase(button.dataset.case)));
+    }
+
+    async function loadSelections() {
+      if (!selectionLibrary) {
+        selectionLibrary = await getJson('/api/selections');
+        $('#selectionBatch').innerHTML = '<option value="ALL">全部筛选批次</option>' + selectionLibrary.batches.slice().reverse().map(batch =>
+          `<option value="${esc(batch.id)}">${esc(batch.title)} · ${batch.count}只</option>`).join('');
+      }
+      const batch = $('#selectionBatch').value;
+      const query = $('#selectionSearch').value.trim().toLowerCase();
+      const rows = selectionLibrary.records.filter(row =>
+        (batch === 'ALL' || row.selections.some(item => item.id === batch)) &&
+        [row.symbol, row.name, ...row.selections.map(item => item.theme)].join(' ').toLowerCase().includes(query));
+      $('#candidateDate').textContent = `归档 ${selectionLibrary.updated_at}`;
+      $('#selectionCount').textContent = `${rows.length} / ${selectionLibrary.count} 只 · ${selectionLibrary.batches.length} 个批次`;
+      $('#candidateList').innerHTML = rows.map(row => {
+        const tier = {CORE_WATCH:'a', CONDITIONAL_WATCH:'conditional', RESERVE:'reserve'}[row.group] || '';
+        return `<button class="candidate ${row.symbol === activeSymbol ? 'active' : ''}" data-symbol="${esc(row.symbol)}" title="${esc(row.note)}">
+          <div class="candidate-top"><span class="candidate-name">${esc(row.name)}</span><span class="candidate-tier ${tier}">${esc(row.group_label)}</span></div>
+          <div class="candidate-meta"><span>${esc(row.symbol)}</span><span>${esc(row.theme)}</span></div>
+          <div class="candidate-meta"><span>归档阶段：${esc(stageShortLabels[row.snapshot.cycle] || row.snapshot.cycle)}</span><span>${row.selections.length}次入选 · ${esc(row.as_of)}</span></div>
+        </button>`;
+      }).join('') || '<div class="error">没有符合条件的归档标的</div>';
+      document.querySelectorAll('#candidateList [data-symbol]').forEach(button => button.addEventListener('click', () => runAnalysis(button.dataset.symbol)));
+    }
+
+    function renderSelectionHistory(data) {
+      if (sourceMode !== 'selections') return '';
+      const row = selectionLibrary?.records.find(item => item.symbol === data.meta.symbol);
+      if (!row) return '';
+      const routeLabels = {LOCAL_FIRST_PULLBACK_CONFIRMED:'局部首回踩确认', BREAKOUT_TODAY:'当日突破', RECENT_BREAKOUT:'近期突破保持', NEAR_BREAKOUT:'接近突破', EMA_RECLAIM_ONLY:'仅收复均线', NO_SETUP:'未形成价格突破'};
+      return `<section class="section selection-history">
+        <div class="section-head"><h2>筛选归档 · ${esc(row.group_label)}</h2><span>当前分析行情 ${esc(data.meta.price_date)} · 入选归档 ${esc(row.recorded_at)}</span></div>
+        <p class="subtle">研究关注顺序，非收益排名或买入许可。以下为入选时快照，非当时生产命中证明。</p>
+        <div class="table-wrap"><table><thead><tr><th>入选批次 / 行情日</th><th>题材</th><th>研究路径 / 引擎周期</th><th>入选备注</th></tr></thead><tbody>
+          ${row.selections.slice().reverse().map(item => `<tr><td>${esc(item.title)}<br><span class="subtle">${esc(item.as_of)} · 记录 ${esc(item.recorded_at)}</span></td><td>${esc(item.theme)}</td><td>${esc(routeLabels[item.snapshot.route] || item.snapshot.route)}<br><span class="subtle">${esc(stageShortLabels[item.snapshot.cycle] || item.snapshot.cycle)} · ${esc(item.snapshot.engine_permission)}</span></td><td class="review-note">${esc(item.note)}</td></tr>`).join('')}
+        </tbody></table></div>
+      </section>`;
+    }
+
+    async function switchSource(mode) {
+      if (sourceMode === 'review' && !confirmReviewLeave()) return;
+      sourceMode = mode;
+      for (const [id, source] of [['dailySource','daily'], ['portfolioSource','portfolio'], ['selectionSource','selections'], ['historySource','history'], ['etfSource','etf'], ['reviewSource','review'], ['s4Source','s4'], ['s3Source','s3'], ['s1Source','s1'], ['s2Source','s2'], ['s5Source','s5']]) {
+        $(`#${id}`).classList.toggle('active', mode === source);
+        $(`#${id}`).setAttribute('aria-pressed', String(mode === source));
+      }
+      $('#listTitle').textContent = {history:'历史案例库', selections:'筛选榜单', daily:'今日机会', portfolio:'虚拟持仓台账', etf:'ETF固定观察池', review:'2026系统回测复盘', s4:'S4 回踩再启动', s3:'S3 平台突破（研究，未上线）', s1:'S1 新结构突破（研究，未上线）', s2:'S2 调整后再转强（研究，未上线）', s5:'S5 底部反转（研究，未上线）'}[mode];
+      $('#searchForm').querySelectorAll('input, button').forEach(el => { el.disabled = mode === 'review'; });
+      $('#etfFilter').hidden = mode !== 'etf';
+      $('#caseFilter').hidden = mode !== 'history';
+      $('#caseRouteFilter').hidden = mode !== 'history';
+      $('#routeDefinitions').hidden = mode !== 'history';
+      $('#selectionFilters').hidden = mode !== 'selections';
+      $('#candidateList').classList.toggle('selection-list', ['selections','etf'].includes(mode));
+      if (mode !== 'history') $('#dateInput').value = latestDailyDate;
+      try {
+        await loadCandidates();
+        if (sourceMode !== mode) return;
+        if (mode === 'portfolio') { renderVirtualPortfolio(); return; }
+        if (/^s[1-5]$/.test(mode)) { renderScenarioOverview(mode); return; }
+        if (mode === 'review') {
+          const firstReview = document.querySelector('[data-review]');
+          if (firstReview) await runReviewCase(firstReview.dataset.review);
+          else $('#workspace').innerHTML = '<div class="empty">尚未导入系统回测案例</div>';
+          return;
+        }
+        const first = document.querySelector('.candidate');
+        if (first) mode === 'history' ? await runCase(first.dataset.case) : await runAnalysis(first.dataset.symbol);
+        else $('#workspace').innerHTML = '<div class="empty">当前列表没有标的</div>';
+      } catch (error) { $('#candidateList').innerHTML = `<div class="error">${esc(error.message)}</div>`; }
+    }
+
+    async function runCase(id) {
+      document.body.classList.add('loading');
+      $('#runStatus').textContent = '正在载入历史案例';
+      try {
+        const data = await getJson(`/api/history-cases/${encodeURIComponent(id)}`);
+        activeCase = id;
+        render(data);
+        $('#symbolInput').value = data.meta.symbol;
+        $('#dateInput').value = data.meta.price_date;
+        $('#runStatus').textContent = `${data.case.category_label} · ${data.identity.name}`;
+        document.querySelectorAll('[data-case]').forEach(button => button.classList.toggle('active', button.dataset.case === id));
+      } catch (error) {
+        $('#workspace').innerHTML = `<div class="error">${esc(error.message)}</div>`;
+        $('#runStatus').textContent = '案例载入失败';
+      } finally { document.body.classList.remove('loading'); }
+    }
+
+    function metric(label, value, suffix = '', note = '', decimals = null) {
+      return `<div class="metric"><label>${esc(label)}</label><strong class="${pctClass(value)}">${num(value, decimals ?? (suffix === '%' ? 1 : 2))}${suffix}</strong>${note ? `<small>${esc(note)}</small>` : ''}</div>`;
+    }
+
+    function renderLifecycle(data) {
+      if (data.case && !data.case.discovery_audit) return data.case.milestones.map((row,index)=>`<div class="life-step ${index === data.case.milestones.length-1 ? 'active' : 'past'}">${esc(row.label)}<br><small>${esc(row.date)}</small></div>`).join('');
+      const changes = (data.lifecycle.history || []).filter(row => row.cycle_changed).slice(-8);
+      if (!changes.length) return `<div class="life-step active">${esc(data.lifecycle.current_label)}</div>`;
+      return changes.map((row, index) => {
+        const classes = index === changes.length - 1 ? 'active' : 'past';
+        return `<div class="life-step ${classes}" title="${esc(row.cycle_reason_label)}">${esc(row.cycle_stage_label)}<br><small>${esc(row.date)}</small></div>`;
+      }).join('');
+    }
+
+    function chartSizing(compact) {
+      return {
+        margin:{l:compact?40:50,r:18,t:compact?12:38,b:compact?135:35},
+        legend:{orientation:'h', x:0, y:compact?-.2:1.04, yanchor:compact?'top':'bottom', entrywidth:compact?110:0, font:{size:10}},
+      };
+    }
+
+    function macdTraces(bars, dates) {
+      // MACD(12,26,9): the analyzer sends it from the full history; older cached results fall back to the displayed closes
+      let dif = bars.map(r => r.dif), dea = bars.map(r => r.dea), hist = bars.map(r => r.macd);
+      if (bars.some(r => r.dif == null)) {
+        const ema = (xs, n) => { const k = 2 / (n + 1); let e = xs[0]; return xs.map(x => (e = x * k + e * (1 - k))); };
+        const closes = bars.map(r => r.close), e12 = ema(closes, 12), e26 = ema(closes, 26);
+        dif = e12.map((v, i) => v - e26[i]);
+        dea = ema(dif, 9);
+        hist = dif.map((v, i) => 2 * (v - dea[i]));
+      }
+      return [
+        {type:'bar', x:dates, y:hist, name:'MACD柱', marker:{color:hist.map(v => v >= 0 ? 'rgba(184,58,58,.75)' : 'rgba(22,115,74,.75)')}, xaxis:'x', yaxis:'y4', hovertemplate:'MACD %{y:.3f}<extra></extra>'},
+        {type:'scatter', mode:'lines', x:dates, y:dif, name:'DIF', line:{color:'#1d1f24', width:1.1}, xaxis:'x', yaxis:'y4', hovertemplate:'DIF %{y:.3f}<extra></extra>'},
+        {type:'scatter', mode:'lines', x:dates, y:dea, name:'DEA', line:{color:'#d08a00', width:1.1}, xaxis:'x', yaxis:'y4', hovertemplate:'DEA %{y:.3f}<extra></extra>'},
+      ];
+    }
+
+    function renderChart(data) {
+      const compact = $('#priceChart').clientWidth < 480;
+      $('#priceChart').dataset.compact = String(compact);
+      const bars = data.chart.bars;
+      const dates = bars.map(row => row.date);
+      const closeByDate = Object.fromEntries(bars.map(row => [row.date, row.close]));
+      const events = data.event.history.filter(event => closeByDate[event.date] !== undefined && ['PASS', 'WATCH'].includes(event.validation));
+      const traces = [
+        {type:'candlestick', x:dates, open:bars.map(r=>r.open), high:bars.map(r=>r.high), low:bars.map(r=>r.low), close:bars.map(r=>r.close), name:'价格', increasing:{line:{color:'#b83a3a'}}, decreasing:{line:{color:'#16734a'}}, xaxis:'x', yaxis:'y'},
+        {type:'scatter', mode:'lines', x:dates, y:bars.map(r=>r.ema10), name:'EMA10', line:{color:'#94959b', width:1}, xaxis:'x', yaxis:'y'},
+        {type:'scatter', mode:'lines', x:dates, y:bars.map(r=>r.ema20), name:'EMA20', line:{color:'#d28b2f', width:1.5}, xaxis:'x', yaxis:'y'},
+        {type:'scatter', mode:'lines', x:dates, y:bars.map(r=>r.ema60), name:'EMA60', line:{color:'#326a8b', width:1.4}, xaxis:'x', yaxis:'y'},
+        {type:'bar', x:dates, y:bars.map(r=>r.amount), name:'成交额(亿)', marker:{color:'rgba(97,112,103,.28)'}, xaxis:'x', yaxis:'y2'},
+        ...macdTraces(bars, dates),
+      ];
+      const cycleByDate = Object.fromEntries((data.lifecycle.history || []).map(r => [r.date, r]));
+      traces.push({type:'scatter', mode:'markers', x:dates, y:bars.map(r=>r.close), marker:{size:1, opacity:0}, showlegend:false,
+        customdata:dates.map(d=>{const r=cycleByDate[d] || {}; return [r.cycle_stage_label || '', r.speed_label || '', r.setup_status_label || '', r.turnover_pct];}),
+        hovertemplate:data.meta.mode === 'ETF_OBSERVATION' ? '%{customdata[0]}<br>%{customdata[1]}<extra>ETF量价观察</extra>' : '%{customdata[0]}<br>%{customdata[1]}<br>形态：%{customdata[2]}<br>换手 %{customdata[3]:.2f}%<extra></extra>'});
+      const confirmed = (data.setups?.history || []).filter(r => r.setup_confirmed_at && closeByDate[r.setup_confirmed_at] !== undefined);
+      if (confirmed.length) traces.push({type:'scatter', mode:'markers', x:confirmed.map(r=>r.setup_confirmed_at), y:confirmed.map(r=>closeByDate[r.setup_confirmed_at]),
+        name:'回踩/整理观察', marker:{symbol:'diamond', size:9, color:'#7c5298'}, text:confirmed.map(r=>r.setup_label), hovertemplate:'%{text}<extra>仅形态观察</extra>'});
+      if (events.length) traces.push({type:'scatter', mode:'markers+text', x:events.map(e=>e.date), y:events.map(e=>closeByDate[e.date]), text:events.map(e=>e.event), textposition:'top center', textfont:{size:9}, marker:{size:8, color:events.map(e=>e.validation === 'PASS' ? '#16734a' : (e.validation === 'WATCH' ? '#9a6518' : '#9a9f9b'))}, name:'结构事件', xaxis:'x', yaxis:'y'});
+      const shapes = stageShapes(data);
+      const annotations = stageAnnotations(data);
+      const auditNodes = data.case?.discovery_audit ? data.case.milestones.filter(r => closeByDate[r.date] !== undefined) : [];
+      if (auditNodes.length) traces.push({type:'scatter', mode:'markers', x:auditNodes.map(r=>r.date), y:auditNodes.map(r=>closeByDate[r.date]),
+        name:'旧发现审计节点', marker:{symbol:'square-open', size:11, color:'#9a6518', line:{width:2}},
+        text:auditNodes.map(r=>r.label), hovertemplate:'%{x}<br>%{text}<extra>历史重放，非生产命中</extra>'});
+      traces.push(...caseChartTraces(data));
+      traces.push(...priceVolumeTrace(data.price_volume_context, dates));
+      (data.meta.mode === 'HISTORICAL_RECONSTRUCTION' ? [] : [['trigger_price', '#9a6518', '参考突破'], ['invalid_price', '#b83a3a', '参考支撑']]).forEach(([key, color, label]) => {
+        const value = Number(data.price[key]);
+        if (Number.isFinite(value)) {
+          shapes.push({type:'line', xref:'paper', x0:0, x1:1, yref:'y', y0:value, y1:value, line:{color, width:1, dash:'dot'}});
+          annotations.push({xref:'paper', x:1, yref:'y', y:value, text:`${label} ${value.toFixed(2)}`, showarrow:false, xanchor:'right', yanchor:'bottom', font:{size:10, color}, bgcolor:'rgba(255,255,255,.8)'});
+        }
+      });
+      Plotly.react('priceChart', traces, {
+        ...chartSizing(compact), paper_bgcolor:'#fff', plot_bgcolor:'#fff', hovermode:'x unified', dragmode:'pan',
+        xaxis:{type:'category', categoryorder:'array', categoryarray:dates, nticks:compact?3:6, tickangle:0, rangeslider:{visible:false}, gridcolor:'#edf0ed', showspikes:true, spikemode:'across', spikecolor:'#999'},
+        yaxis:{domain:[.40,.88], gridcolor:'#e8ece9', fixedrange:false},
+        yaxis3:{domain:[.345,.36], visible:false, fixedrange:true},
+        yaxis2:{domain:[.2,.31], gridcolor:'#f0f2f0', fixedrange:false},
+        yaxis4:{domain:[0,.16], gridcolor:'#f0f2f0', fixedrange:false, zeroline:true, zerolinecolor:'#9aa39d', title:{text:'MACD', font:{size:10}}},
+        shapes, annotations,
+      }, {responsive:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']});
+      const chart = $('#priceChart');
+      chart.on('plotly_hover', event => {
+        const date = event.points?.[0]?.x;
+        const span = (data.chart.stage_segments || []).find(s=>s.start <= date && s.end >= date);
+        if (span) showStageDetail(span);
+      });
+      chart.addEventListener('pointermove', event => {
+        const size = chart._fullLayout?._size;
+        if (!size || !showStageBackground) return;
+        const box = chart.getBoundingClientRect();
+        const x = event.clientX-box.left-size.l, y = event.clientY-box.top-size.t;
+        if (x < 0 || x > size.w || y < 0 || y > size.h*.06) return;
+        const range = chart._fullLayout.xaxis.range;
+        const date = dates[Math.round(range[0]+x/size.w*(range[1]-range[0]))];
+        const span = (data.chart.stage_segments || []).find(s=>s.start <= date && s.end >= date);
+        if (span) showStageDetail(span);
+      });
+      chart.on('plotly_relayout', event => {
+        if (Object.keys(event).some(key=>key.startsWith('xaxis.range') || key === 'xaxis.autorange' || key === 'xaxis.nticks')) {
+          Plotly.relayout(chart, {annotations:[...(chart.layout.annotations || []).filter(a=>!String(a.name || '').startsWith('stage-')), ...stageAnnotations(data)]});
+        }
+      });
+      const lastSpan = data.chart.stage_segments?.at(-1);
+      if (lastSpan) showStageDetail(lastSpan);
+    }
+
+    function stageColor(span) { return stagePalette[span.stage] || span.color; }
+
+    function stageShapes(data) {
+      const index = Object.fromEntries(data.chart.bars.map((r,i)=>[r.date,i]));
+      return (data.chart.stage_segments || []).filter(s=>index[s.start] !== undefined && index[s.end] !== undefined).flatMap((s,i)=>{
+        const color = stageColor(s);
+        const rgb = [1,3,5].map(offset=>parseInt(color.slice(offset,offset+2),16)).join(',');
+        const base = {type:'rect', xref:'x', x0:index[s.start]-.5, x1:index[s.end]+.5, visible:showStageBackground};
+        return [
+          {...base, name:`stage-fill-${i}`, yref:'y domain', y0:0, y1:1, fillcolor:`rgba(${rgb},${stageOpacity})`,
+            line:{color:`rgba(${rgb},.65)`,width:1}, layer:'below'},
+          {...base, name:`stage-band-${i}`, yref:'paper', y0:.94, y1:1, fillcolor:color,
+            line:{color:'#fff',width:1}, layer:'below'},
+        ];
+      });
+    }
+
+    function stageAnnotations(data) {
+      const chart = $('#priceChart');
+      const dates = data.chart.bars.map(r=>r.date);
+      const range = chart.layout?.xaxis?.range || [-.5, dates.length-.5];
+      const left = Math.max(-.5, Number(range[0])), right = Math.min(dates.length-.5, Number(range[1]));
+      const margin = chartSizing(chart.clientWidth < 480).margin;
+      const width = chart.clientWidth-margin.l-margin.r;
+      return (data.chart.stage_segments || []).flatMap((s,i)=>{
+        const start = Math.max(left,dates.indexOf(s.start)-.5), end = Math.min(right,dates.indexOf(s.end)+.5);
+        const label = stageShortLabels[s.stage] || s.label;
+        if (end <= start || (end-start)/(Number(range[1])-Number(range[0]))*width < label.length*12+14) return [];
+        return [{name:`stage-label-${i}`, xref:'x', x:(start+end)/2, yref:'paper', y:.97, text:label,
+          showarrow:false, yanchor:'middle', font:{size:12,color:['PULLBACK','OVERHEATED'].includes(s.stage)?'#191f19':'#fff'},
+          hovertext:`${s.label} | ${s.start} 至 ${s.end} | ${s.sessions}个交易日`, visible:showStageBackground}];
+      });
+    }
+
+    function showStageDetail(span) {
+      const detail = $('#stageReadout');
+      detail.style.borderLeftColor = stageColor(span);
+      detail.innerHTML = `<strong>${esc(span.label)}</strong><span>${esc(span.start)} 至 ${esc(span.end)} · ${esc(span.sessions)}个交易日</span>`;
+    }
+
+    function updateStageDisplay() {
+      const chart = $('#priceChart');
+      Plotly.relayout(chart, {
+        shapes:[...(chart.layout.shapes || []).filter(s=>!String(s.name || '').startsWith('stage-')), ...stageShapes(currentData)],
+        annotations:[...(chart.layout.annotations || []).filter(a=>!String(a.name || '').startsWith('stage-')), ...stageAnnotations(currentData)],
+      });
+    }
+
+    function renderStageLegend(data) {
+      const stages = [...new Map((data.chart.stage_segments || []).map(s=>[s.stage,s])).values()];
+      return stages.map(s=>`<span><i style="background:${esc(stageColor(s))};border-color:${esc(stageColor(s))}"></i>${esc(s.label)}</span>`).join('');
+    }
+
+    function renderSetups(data) {
+      return (data.setups?.history || []).slice().reverse().map(r=>`<tr><td>${esc(r.setup_started_at)}</td><td>${esc(r.setup_label)}</td><td>${esc(r.setup_status_label)}</td><td>${esc(r.setup_confirmed_at || '--')}</td><td>${esc(r.setup_ended_at || '--')}</td><td>${num(r.setup_trigger_price,3)}</td><td>${num(r.setup_invalid_price,3)}</td><td>${num(r.setup_turnover_contraction,2)}</td></tr>`).join('') || '<tr><td colspan="8">当前窗口未识别符合条件的子形态</td></tr>';
+    }
+
+    function renderEvidence(data) {
+      const carrier = data.evidence.carrier || {};
+      const items = [
+        ['资金保留', carrier.retention_state], ['结构准备', carrier.structure_ready ?? carrier.structure_gate],
+        ['供给收缩', carrier.supply_ready ?? carrier.supply_gate], ['载体可交易性', carrier.execution_state],
+        ['延伸风险', carrier.extension_state], ['派发风险', carrier.distribution_risk],
+        ['换手历史分位', `${num(data.turnover?.turnover_percentile120)}%`],
+        ['近5日换手收缩比', num(data.turnover?.turnover_contraction5)],
+        ['下跌/上涨日换手比', num(data.turnover?.turnover_down_up20)],
+        ['价格速度', data.speed?.speed_label],
+        ['速度（ATR/日）', num(data.speed?.speed_atr_per_session, 3)],
+        ['供需补充', data.speed?.speed_evidence_label],
+      ];
+      return items.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value === '' || value == null ? '无数据' : value)}</dd>`).join('');
+    }
+
+    function renderEvents(data) {
+      return data.event.history.slice().reverse().map(row => `<tr><td>${esc(row.date)}</td><td>${esc(row.label)}</td><td>${esc(row.validation)}</td></tr>`).join('') || '<tr><td colspan="3">窗口内无事件</td></tr>';
+    }
+
+    function renderTrajectory(data) {
+      return data.evidence.trajectory.slice().reverse().map(row => `<tr><td>${esc(row.date)}</td><td>${esc(row.state)}</td><td>${esc(row.capital_stage)}</td><td>${esc(row.route)}</td><td>${esc(row.structure_ready)}</td><td>${esc(row.supply_ready)}</td></tr>`).join('') || '<tr><td colspan="6">暂无生产轨迹</td></tr>';
+    }
+
+    function renderCycleHistory(data) {
+      return (data.lifecycle.history || []).filter(r=>r.date >= data.chart.bars[0].date).slice().reverse().map(row => `<tr><td>${esc(row.date)}</td><td>${esc(row.cycle_stage_label)}</td><td>${esc(row.cycle_started_at || '未启动')}</td><td>${esc(row.cycle_reason_label)}</td><td>${num(row.turnover_pct)}%</td><td>${num(row.turnover_relative20)}x</td><td>${esc(row.turnover_context_label)}</td></tr>`).join('') || '<tr><td colspan="7">暂无连续记录</td></tr>';
+    }
+
+    function renderDiscoveryAudit(data) {
+      const audit = data.case?.discovery_audit;
+      if (!audit) return '';
+      const items = [
+        ['P0首次覆盖', audit.first_signal || '未覆盖', `提前 ${audit.lead_sessions ?? '-'} 个交易日，仅相对题材T0`],
+        ['P0点火前最近覆盖', audit.last_signal_before_t0 || '未覆盖', `距T0 ${audit.gap_sessions_to_t0 ?? '-'} 个交易日`],
+        ['P0点火前一日', audit.eve_date, audit.eve_state],
+        ['题材点火T0', data.case.t0, `旧状态 ${audit.t0_state}；不等于个股首次启动`],
+        ['P1首次候选', audit.p1_first_seen || '未入选', `类别 ${audit.p1_first_class || '-'}；B类有效性未定`],
+        ['现引擎重建对照', audit.first_signal || '无首次覆盖', `首次覆盖日：${audit.current_stage_at_first_signal}；T0：${audit.current_stage_at_t0}`],
+      ];
+      return `<section class="table-section" id="discoveryAudit"><h2>发现审计</h2>
+        <p>${audit.covered_on_eve ? '点火前一日仍被旧规则覆盖' : '点火前一日未被旧规则覆盖'}；${audit.continuous_from_first_to_eve ? '首次覆盖后连续保留' : '不具备首次覆盖至点火前的连续证据'}。这不直接判定交易成败。</p>
+        <div class="table-wrap"><table><thead><tr><th>证据</th><th>日期</th><th>结论与限制</th></tr></thead><tbody>${items.map(r=>`<tr>${r.map(v=>`<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+        <p class="subtle">${esc(audit.bottleneck ? '旧审计卡点：' + audit.bottleneck + '。' : '')}未证明当时生产命中，也未证明同一轮潜伏成功。题材归属来源：${esc(audit.membership_source)}。</p>
+        <details><summary>旧审计逐日轨迹（${audit.trace.length}个交易日）</summary><div class="table-wrap"><table><thead><tr><th>日期</th><th>P0状态</th><th>资金代理阶段</th><th>预筛</th><th>供给</th><th>结构</th></tr></thead><tbody>${audit.trace.map(r=>`<tr>${[r.date,r.state,r.capital_stage,r.prefilter,r.supply_ready,r.structure_ready].map(v=>`<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div></details></section>`;
+    }
+
+    function render(data) {
+      currentData = data;
+      const risk = ['RISK_WATCH', 'D_AVOID'].includes(data.decision.value_tier);
+      const watch = data.analysis_core ? data.analysis_core.advice !== 'PRIORITY_REVIEW' : !data.meta.in_daily_pool;
+      const concepts = data.identity.concepts.map(value => `<span class="tag">${esc(value)}</span>`).join('');
+      const p = data.potential;
+      const historical = data.meta.mode === 'HISTORICAL_RECONSTRUCTION';
+      const setup = data.setups?.current || {};
+      const confirmationAt = data.analysis_core?.review_window?.confirmed_at || setup.setup_confirmed_at;
+      const setupKnownAt = data.analysis_core?.active_strategy === 'S4' ? confirmationAt : setup.setup_started_at;
+      $('#workspace').innerHTML = `
+        ${renderSelectionHistory(data)}
+        ${historical ? `<section class="case-banner"><strong>${esc(data.case?.category_label || '历史日期复盘')} · ${esc(data.case?.window_start || data.chart.bars[0].date)} 至 ${esc(data.meta.price_date)}</strong><p>${esc(data.case?.coverage_note || '量价按指定日期截断；准备期没有生产证据时，不补画吸筹。')}</p><p class="subtle">现引擎历史重建，非当时生产命中。事后选例；独立模拟价差不代表真实成交或整条线路的收益验证。</p></section>` : ''}
+        <section class="decision-band ${risk ? 'risk' : (watch ? 'watch' : '')}">
+          <div><div class="identity-line"><h1>${esc(data.identity.name || data.meta.symbol)}</h1><span class="code">${esc(data.meta.symbol)} · ${esc(data.identity.industry)}</span><span class="pool">${historical ? '历史量价重建' : (data.meta.in_daily_pool ? '当日发现池' : '单股补充分析')}</span></div><div class="decision-copy"><strong>${esc(data.decision.headline)}</strong><span class="reason">${esc(data.decision.reason)}</span></div></div>
+          <div class="permission"><b>${esc(data.decision.execution_permission_label || '无执行许可')}</b><span>${esc(data.decision.value_tier_label)} · 市场 ${esc(data.meta.market_state)}</span></div>
+        </section>
+        ${sourceMode === 'daily' ? `<section class="section paper-entry">${paperAddMarkup(data.meta.symbol, data.meta.price_date, data.price.close, true)}<span>${esc(data.meta.price_date)} 收盘 ${num(data.price.close, 3)} · 手工模拟记账</span></section>` : ''}
+        ${sourceMode === 'portfolio' ? renderVirtualContext(data.meta.symbol) : ''}
+        ${renderCaseReview(data)}
+        ${renderDiscoveryAudit(data)}
+        ${renderAnalysisCore(data.analysis_core)}
+        ${renderPriceVolume(data.price_volume_context)}
+        <section class="metrics">
+          ${metric('最新收盘', data.price.close, '', data.meta.price_date)}
+          ${metric('5日涨幅', data.price.r5_pct, '%')}
+          ${metric('20日涨幅', data.price.r20_pct, '%')}
+          ${metric('EMA20偏离', data.price.ema20_bias_pct, '%')}
+          ${metric('量能比', data.price.amount_ratio, 'x')}
+          ${metric('换手率', data.turnover?.turnover_pct, '%')}
+          ${metric('相对换手', data.turnover?.turnover_relative20, 'x', data.turnover?.turnover_context_label || '无数据')}
+          ${metric('距参考突破位', data.price.trigger_distance_pct, '%', `参考 ${num(data.price.trigger_price, 2)}`)}
+          ${metric('距参考支撑位', data.price.stop_distance_pct, '%', `参考 ${num(data.price.invalid_price, 2)}`)}
+        </section>
+        <section class="section"><div class="section-head"><h2>主升浪生命周期</h2><span>${esc(data.lifecycle.discovery_path_label)} · 当日形态：${esc(data.lifecycle.broad_phase_label)} [${esc(data.lifecycle.phase_validation)}]</span></div><div class="lifecycle">${renderLifecycle(data)}</div><p class="subtle">本轮启动 ${esc(data.lifecycle.started_at || '尚未识别')} · ${data.lifecycle.source === 'PRODUCTION' ? '生产触发' : '量价重建，非生产命中证明'} · ${esc(data.lifecycle.reason_label || '')} · 数据 ${esc(data.lifecycle.data_status)}</p></section>
+        <section class="section"><div class="section-head"><h2>价格、量能与结构事件</h2><div class="stage-controls"><label><input id="stageBackgroundToggle" type="checkbox" ${showStageBackground ? 'checked' : ''}> 阶段背景</label><label>背景浓度 <input id="stageOpacity" type="range" min="15" max="50" step="5" value="${Math.round(stageOpacity*100)}" aria-label="背景浓度"><output id="stageOpacityValue">${Math.round(stageOpacity*100)}%</output></label></div><span>${esc(data.chart.price_basis)}</span></div><div class="stage-legend">${renderStageLegend(data)}</div><div id="stageReadout" class="stage-readout"></div><div id="priceChart"></div><div class="observation"><span><b>速度：</b>${esc(data.speed?.speed_label || '无数据')}</span><span><b>子形态：</b>${esc(setup.setup_label || '未形成')} · ${esc(setup.setup_status_label || '')}</span><span><b>供需：</b>${esc(data.speed?.speed_evidence_label || '无数据')}</span></div><p class="subtle">连续阶段、速度与子形态均为观察标签，阈值待校准。加速不等于见顶；下跌减速不等于见底。</p></section>
+        <section class="details">
+          <div class="detail"><h2>机会与失效条件</h2><dl class="kv"><dt>当前建议</dt><dd>${esc(data.decision.headline)}</dd><dt>个股结构</dt><dd>${esc(data.analysis_core?.structural_advice_label || '未生成')}</dd><dt>形态首次可知</dt><dd>${esc(setupKnownAt || '尚未形成')}</dd><dt>形态确认日</dt><dd>${esc(confirmationAt || '未确认')}</dd><dt>确认后有效期</dt><dd>${esc(data.analysis_core?.review_window.ttl_sessions ?? '--')} 个交易日，待校准</dd><dt>执行边界</dt><dd>仅建议，不生成成交</dd></dl><p class="subtle">${esc(data.analysis_core?.next_condition || '')}</p></div>
+          <div class="detail"><h2>阶段事件与题材</h2><dl class="kv"><dt>当前阶段</dt><dd>${esc(data.lifecycle.current_label)} (${esc(data.lifecycle.current)})</dd><dt>最近验证事件</dt><dd>${esc(data.event.latest_label || '无')} ${esc(data.event.latest_date || '')}</dd><dt>事件验证</dt><dd>${esc(data.event.validation || '无')}</dd><dt>量价关系</dt><dd>${esc(data.event.effort_label)} [${esc(data.event.effort_validation)}]</dd><dt>所属题材</dt><dd>${esc(data.theme.belonging_theme || '未确认')}</dd><dt>题材生命周期</dt><dd>${esc(data.theme.lifecycle_label || data.theme.lifecycle || '未确认')}</dd><dt>题材来源</dt><dd>${esc(data.theme.source || '无')}</dd></dl><div class="tag-list" style="margin-top:14px">${concepts}</div></div>
+          <div class="detail"><h2>资金证据与风险边界</h2><dl class="kv">${renderEvidence(data)}<dt>风险分类</dt><dd>${esc(data.decision.risk_class)}</dd><dt>风险说明</dt><dd>${esc(data.decision.risk_reason)}</dd><dt>观察动作</dt><dd>${esc(data.event.observation_action)}</dd></dl></div>
+        </section>
+        <section class="table-section"><div class="tabs"><button class="tab active" data-tab="cycle">连续生命周期</button><button class="tab" data-tab="setups">回踩与整理</button><button class="tab" data-tab="events">结构事件</button><button class="tab" data-tab="trajectory">生产轨迹</button></div><div class="table-wrap" id="cyclePanel"><table><thead><tr><th>日期</th><th>连续阶段</th><th>本轮启动</th><th>延续或变更原因</th><th>换手率</th><th>相对换手</th><th>换手解释</th></tr></thead><tbody>${renderCycleHistory(data)}</tbody></table></div><div class="table-wrap" id="setupsPanel" hidden><table><thead><tr><th>首次可知</th><th>子形态</th><th>状态</th><th>确认日</th><th>结束日</th><th>冻结确认价</th><th>冻结失效价</th><th>换手收缩比</th></tr></thead><tbody>${renderSetups(data)}</tbody></table></div><div class="table-wrap" id="eventsPanel" hidden><table><thead><tr><th>日期</th><th>事件</th><th>历史验证</th></tr></thead><tbody>${renderEvents(data)}</tbody></table></div><div class="table-wrap" id="trajectoryPanel" hidden><table><thead><tr><th>日期</th><th>生产状态</th><th>资金阶段</th><th>路线</th><th>结构</th><th>供给</th></tr></thead><tbody>${renderTrajectory(data)}</tbody></table></div></section>`;
+      if (historical) {
+        const detail = document.querySelector('.detail');
+        detail.innerHTML = `<h2>${data.case?.discovery_audit ? '旧发现审计节点' : '本轮阶段记录'}</h2><ol class="milestones">${(data.case?.milestones || []).map(r=>`<li>${esc(r.date)} · ${esc(r.label)}</li>`).join('')}</ol><p class="subtle">${esc(data.case?.discovery_audit ? data.case.coverage_note : p.disclaimer)}</p>`;
+      }
+      renderChart(data);
+      $('#stageBackgroundToggle').addEventListener('change', event => {
+        showStageBackground = event.target.checked;
+        updateStageDisplay();
+      });
+      $('#stageOpacity').addEventListener('input', event => {
+        stageOpacity = Number(event.target.value)/100;
+        $('#stageOpacityValue').textContent = `${event.target.value}%`;
+        updateStageDisplay();
+      });
+      document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(item => item.classList.toggle('active', item === tab));
+        $('#eventsPanel').hidden = tab.dataset.tab !== 'events';
+        $('#trajectoryPanel').hidden = tab.dataset.tab !== 'trajectory';
+        $('#cyclePanel').hidden = tab.dataset.tab !== 'cycle';
+        $('#setupsPanel').hidden = tab.dataset.tab !== 'setups';
+      }));
+    }
+
+    async function runAnalysis(symbol) {
+      if (sourceMode === 'etf') return runEtf(symbol);
+      if (!symbol.trim()) return;
+      const requestId = ++analysisRequest;
+      const requestedSource = sourceMode;
+      activeSymbol = symbol;
+      document.body.classList.add('loading');
+      $('#runStatus').textContent = '正在分析';
+      try {
+        const date = $('#dateInput').value;
+        const data = await getJson(`/api/analyze?symbol=${encodeURIComponent(symbol)}&date=${encodeURIComponent(date)}`);
+        if (requestId !== analysisRequest || sourceMode !== requestedSource || $('#dateInput').value !== date) return;
+        render(data);
+        $('#symbolInput').value = data.meta.symbol;
+        $('#runStatus').textContent = `${data.meta.report_date} · ${data.meta.symbol}`;
+        try { await loadCandidates(); } catch (error) { $('#candidateList').innerHTML = `<div class="error">${esc(error.message)}</div>`; }
+      } catch (error) {
+        if (requestId !== analysisRequest || sourceMode !== requestedSource) return;
+        $('#workspace').innerHTML = `<div class="error">${esc(error.message)}</div>`;
+        $('#runStatus').textContent = '分析失败';
+      } finally {
+        if (requestId === analysisRequest) document.body.classList.remove('loading');
+      }
+    }
+
+    $('#searchForm').addEventListener('submit', event => { event.preventDefault(); runAnalysis($('#symbolInput').value); });
+    window.addEventListener('resize', () => {
+      const chart = $('#priceChart');
+      if (!chart?.data) return;
+      const compact = chart.clientWidth < 480;
+      const modeChanged = chart.dataset.compact !== String(compact);
+      chart.dataset.compact = String(compact);
+      Plotly.relayout(chart, {
+        ...(modeChanged ? {...chartSizing(compact), 'xaxis.nticks':compact?3:6} : {}),
+        annotations:[...(chart.layout.annotations || []).filter(a=>!String(a.name || '').startsWith('stage-')), ...stageAnnotations(currentData)],
+      });
+    });
+    $('#dailySource').addEventListener('click', () => switchSource('daily'));
+    $('#s4Source').addEventListener('click', () => switchSource('s4'));
+    $('#s3Source').addEventListener('click', () => switchSource('s3'));
+    $('#s1Source').addEventListener('click', () => switchSource('s1'));
+    $('#s2Source').addEventListener('click', () => switchSource('s2'));
+    $('#s5Source').addEventListener('click', () => switchSource('s5'));
+    document.addEventListener('click', event => {
+      const overview = event.target.closest('[data-scenario-overview]');
+      if (overview) renderScenarioOverview(overview.dataset.scenarioOverview);
+    });
+    $('#selectionSource').addEventListener('click', () => switchSource('selections'));
+    for (const [id, eventName] of [['selectionBatch','change'], ['selectionSearch','input']]) {
+      $(`#${id}`).addEventListener(eventName, () => loadSelections().catch(error => { $('#candidateList').innerHTML = `<div class="error">${esc(error.message)}</div>`; }));
+    }
+    $('#historySource').addEventListener('click', () => switchSource('history'));
+    $('#caseFilter').addEventListener('change', () => loadHistoryCases().catch(error => { $('#candidateList').innerHTML = `<div class="error">${esc(error.message)}</div>`; }));
+    $('#caseRouteFilter').addEventListener('change', () => loadHistoryCases().catch(error => { $('#candidateList').innerHTML = `<div class="error">${esc(error.message)}</div>`; }));
+    $('#dateInput').addEventListener('change', async () => { try { await loadCandidates(); } catch (error) { $('#candidateList').innerHTML = `<div class="error">${esc(error.message)}</div>`; } });
+  </script>
+  <script src="{{ url_for('static', filename='mainwave_etf.js') }}"></script>
+  <script src="{{ url_for('static', filename='mainwave_review_workbench.js', v='2.22.0') }}"></script>
+  <script src="{{ url_for('static', filename='mainwave_virtual_portfolio.js', v='2.24.0') }}"></script>
+  <script>
+    loadCandidates().then(() => {
+      const first = document.querySelector('.candidate');
+      if (first) { $('#symbolInput').value = first.dataset.symbol; runAnalysis(first.dataset.symbol); }
+    }).catch(error => { $('#candidateList').innerHTML = `<div class="error">${esc(error.message)}</div>`; });
+  </script>
+</body>
+</html>

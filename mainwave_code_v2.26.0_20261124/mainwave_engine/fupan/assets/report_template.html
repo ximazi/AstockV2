@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light"><meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<title>每日交易复盘 · 双层报告</title>
+<style>/*__REPORT_CSS__*/</style>
+</head>
+<body>
+<a class="skip" href="#main">跳至报告正文</a>
+<aside class="sidebar" aria-label="报告导航">
+ <div class="brand"><div class="mark">复</div><div><strong>交易复盘</strong><small>EVIDENCE → DECISION</small></div></div>
+ <div class="nav-label">REPORT / 双层阅读</div>
+ <button class="rail-link active" data-view="brief"><span class="count">01</span>精华版 <span class="small">结论</span></button>
+ <button class="rail-link" data-view="detail"><span class="count">02</span>细化版 <span class="small">证据</span></button>
+ <div class="subnav" id="subnav"></div>
+ <div class="rail-foot"><span class="dot"></span>离线报告 · 无交易连接<br>数据 · 解释 · 执行，分层管理<br><span class="mono">TEMPLATE / V2.0</span></div>
+</aside>
+<div class="workspace">
+<header class="topbar">
+ <div class="crumb">研究工作台 <b id="crumb-date">双层日报模板</b></div>
+ <div class="tools">
+  <label class="hint-toggle"><input id="showHints" type="checkbox" aria-label="显示段落输出规范"><span>段落规范</span></label>
+  <button class="btn" id="importBtn">导入 JSON</button><input type="file" id="jsonFile" accept=".json,application/json" hidden>
+  <button class="btn" id="exportBtn">导出 JSON</button>
+  <button class="btn" id="printBtn">打印当前</button>
+  <button class="btn primary" id="printAllBtn">打印全文</button>
+ </div>
+</header>
+<main class="container" id="main" tabindex="-1">
+ <div id="app"><div class="empty">正在读取内嵌报告数据。</div></div>
+ <noscript><div class="no-js">本报告的双层视图需要浏览器启用JavaScript。数据与脚本均内嵌，不请求网络，不连接券商。开发接入请查阅同包README。</div></noscript>
+</main>
+</div>
+<dialog class="source-dialog" id="sourceDialog" aria-labelledby="sourceTitle">
+ <div class="dialog-top"><div><div class="eyebrow">TRACEABLE EVIDENCE</div><h3 id="sourceTitle">证据</h3></div><button class="btn" id="closeDialog" aria-label="关闭证据面板">关闭 ×</button></div>
+ <div class="dialog-body"><div id="sourceMeta" class="dialog-meta"></div><pre id="sourceContent" class="dialog-content"></pre></div>
+</dialog>
+<div class="toast" id="toast" role="status" hidden></div>
+<script id="report-schema" type="application/json">__REPORT_SCHEMA__</script>
+<script id="report-data" type="application/json">__REPORT_DATA__</script>
+<script>/*__REPORT_JS__*/</script>
+</body></html>

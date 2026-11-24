@@ -1,0 +1,124 @@
+{
+  "version": "mainwave_phase_event_study_v2_20260830",
+  "detector_version": "phase_events_observation_v2_20260830",
+  "events": {
+    "SPRING": {
+      "status": "REJECT",
+      "context": "SUPPORT_EVENT",
+      "valid_2025_lift": 0.751,
+      "oos_2026_lift": 0.696
+    },
+    "TEST": {
+      "status": "REJECT",
+      "context": "SUPPORT_EVENT",
+      "valid_2025_lift": 0.665,
+      "oos_2026_lift": 0.641
+    },
+    "SOS": {
+      "status": "REJECT",
+      "context": "SUPPORT_EVENT",
+      "valid_2025_lift": 1.209,
+      "oos_2026_lift": 0.955
+    },
+    "LPS": {
+      "status": "PASS",
+      "context": "SUPPORT_EVENT",
+      "valid_2025_lift": 1.613,
+      "oos_2026_lift": 1.346
+    },
+    "UTAD": {
+      "status": "PASS",
+      "context": "POST_PEAK_RISK",
+      "valid_2025_lift": 4.663,
+      "oos_2026_lift": 5.99
+    },
+    "SOW": {
+      "status": "REJECT",
+      "context": "POST_PEAK_RISK",
+      "valid_2025_lift": 0.099,
+      "oos_2026_lift": 0.101
+    }
+  },
+  "phases": {
+    "ACCUMULATION": {
+      "status": "REJECT",
+      "context": "PRE_START",
+      "valid_2025_lift": 0.832,
+      "oos_2026_lift": 0.932
+    },
+    "REACCUMULATION": {
+      "status": "REJECT",
+      "context": "PRE_START",
+      "valid_2025_lift": 0.874,
+      "oos_2026_lift": 1.576
+    },
+    "MARKUP": {
+      "status": "PASS",
+      "context": "PRE_START",
+      "valid_2025_lift": 1.697,
+      "oos_2026_lift": 1.821
+    },
+    "CLIMAX": {
+      "status": "WATCH",
+      "context": "PRE_START",
+      "valid_2025_lift": 4.87,
+      "oos_2026_lift": 2.069
+    },
+    "DISTRIBUTION": {
+      "status": "PASS",
+      "context": "POST_PEAK",
+      "valid_2025_lift": 38.489,
+      "oos_2026_lift": 20.865
+    },
+    "MARKDOWN": {
+      "status": "REJECT",
+      "context": "POST_PEAK",
+      "valid_2025_lift": 0.009,
+      "oos_2026_lift": 0.017
+    },
+    "TRANSITION": {
+      "status": "REJECT",
+      "context": "PRE_START",
+      "valid_2025_lift": 1.185,
+      "oos_2026_lift": 0.792
+    }
+  },
+  "efforts": {
+    "DEMAND_EXPANSION": {
+      "status": "PASS",
+      "context": "SEQUENCE_OR_EFFORT",
+      "valid_2025_lift": 1.23,
+      "oos_2026_lift": 1.162
+    },
+    "ABSORPTION": {
+      "status": "REJECT",
+      "context": "SEQUENCE_OR_EFFORT",
+      "valid_2025_lift": 0.879,
+      "oos_2026_lift": 0.806
+    },
+    "NO_SUPPLY": {
+      "status": "REJECT",
+      "context": "SEQUENCE_OR_EFFORT",
+      "valid_2025_lift": 0.874,
+      "oos_2026_lift": 0.746
+    },
+    "DISTRIBUTION_PRESSURE": {
+      "status": "PASS",
+      "context": "POST_PEAK_EFFORT",
+      "valid_2025_lift": 4.22,
+      "oos_2026_lift": 5.807
+    }
+  },
+  "sequences": {
+    "SPRING_TO_TEST": {
+      "status": "REJECT",
+      "valid_2025_lift": 0.697,
+      "oos_2026_lift": 0.668
+    },
+    "SOS_TO_LPS": {
+      "status": "REJECT",
+      "valid_2025_lift": 1.401,
+      "oos_2026_lift": 0.786
+    }
+  }
+}
