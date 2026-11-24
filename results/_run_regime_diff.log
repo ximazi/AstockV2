@@ -1,0 +1,28 @@
+=== S4 信号 - 同股异日安慰剂, 分环境, 27 组参数 ===
+两条口径并排: 干净桶 = 安慰剂持仓窗口不含信号行情 (主判据); 全部 = 旧口径
+
+Traceback (most recent call last):
+  File "D:\Program Files\python310\lib\site-packages\pandas\core\indexes\base.py", line 3812, in get_loc
+    return self._engine.get_loc(casted_key)
+  File "pandas/_libs/index.pyx", line 167, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/index.pyx", line 196, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7088, in pandas._libs.hashtable.PyObjectHashTable.get_item
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7096, in pandas._libs.hashtable.PyObjectHashTable.get_item
+KeyError: 'overlaps_source'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\AICode\AStockV2\run_regime_diff.py", line 4, in <module>
+    main3()
+  File "D:\AICode\AStockV2\astockv2\regime_deep.py", line 228, in main3
+    tab = differential_robustness(Path(args.s4_dir))
+  File "D:\AICode\AStockV2\astockv2\regime_deep.py", line 214, in differential_robustness
+    return config_scan(sig, pbo, indices=indices, spans=spans, lookbacks=lookbacks)
+  File "D:\AICode\AStockV2\astockv2\placebo_audit.py", line 162, in config_scan
+    for label, mask in (('干净桶(按源信号)', ~b['overlaps_source']),
+  File "D:\Program Files\python310\lib\site-packages\pandas\core\frame.py", line 4113, in __getitem__
+    indexer = self.columns.get_loc(key)
+  File "D:\Program Files\python310\lib\site-packages\pandas\core\indexes\base.py", line 3819, in get_loc
+    raise KeyError(key) from err
+KeyError: 'overlaps_source'

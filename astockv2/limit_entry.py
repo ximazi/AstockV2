@@ -39,10 +39,13 @@ def run_limit(signals: pd.DataFrame, params: ExitParams, max_chase: float,
         if e['status'] == 'OK':
             res = simulate_exit(b, e['entry_idx'], e['entry_price'],
                                 e['initial_stop'], params, e['atr0'])
-            if res['status'] == 'CLOSED':
+            if res['status'] == 'CLOSED' and not res.get('data_truncated'):
                 res.update({'arm': 'S4 信号', 'symbol': r.symbol,
                             'anchor_day': r.day, 'label': r.label,
-                            'waited': e['waited']})
+                            'waited': e['waited'],
+                            'source_signal_day': r.day,
+                            'days_before_signal': 0,
+                            'overlaps_source_signal': False})
                 sig_rows.append(res)
         if not same_stock:
             continue
@@ -59,10 +62,14 @@ def run_limit(signals: pd.DataFrame, params: ExitParams, max_chase: float,
                 continue
             res2 = simulate_exit(b, e2['entry_idx'], e2['entry_price'],
                                  e2['initial_stop'], params, e2['atr0'])
-            if res2['status'] == 'CLOSED':
+            if res2['status'] == 'CLOSED' and not res2.get('data_truncated'):
                 res2.update({'arm': 'S4 同股异日', 'symbol': r.symbol,
                              'anchor_day': str(b['date'].iloc[ci].date()),
-                             'label': '', 'waited': e2['waited']})
+                             'label': '', 'waited': e2['waited'],
+                             'source_signal_day': str(b['date'].iloc[si].date()),
+                             'days_before_signal': int(si - ci),
+                             'overlaps_source_signal': bool(
+                                 e2['entry_idx'] <= si <= int(res2['exit_idx']))})
                 pbo_rows.append(res2)
     return pd.DataFrame(sig_rows), pd.DataFrame(pbo_rows)
 

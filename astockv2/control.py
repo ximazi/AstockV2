@@ -24,6 +24,9 @@ from .execution import ExitParams, simulate_entry, simulate_exit
 
 UNIVERSE_RE = r'^(sh_(?:60|68)|sz_(?:00|30))\d{4}_daily\.csv$'
 
+# 运行期统计: 被丢掉的交易数与原因
+STATS = {'truncated': 0}
+
 
 def universe() -> list:
     '''与 v1 route_scan 相同的股票域: 沪深主板/创业板/科创板。'''
@@ -46,8 +49,19 @@ def liquid_enough(bars: pd.DataFrame, idx: int) -> bool:
     return float(amt.median()) >= 3e7
 
 
-def run_entry(bars: pd.DataFrame, signal_idx: int, params: ExitParams):
-    '''按统一入场规则尝试一笔, 成交则返回退出模拟结果。'''
+def run_entry(bars: pd.DataFrame, signal_idx: int, params: ExitParams,
+              source_idx: int | None = None):
+    '''按统一入场规则尝试一笔, 成交则返回退出模拟结果。
+
+    source_idx 是这笔交易所对照的那次真实信号在 bars 里的下标 (安慰剂臂用)。
+    有了它就能标出"这笔安慰剂的持仓窗口里含不含那次信号的行情":
+    含 -> 这笔安慰剂买的就是同一波行情, 只是买得更早 (OVERLAP),
+    不含 -> 才是这只股票普通某一天的干净基准 (CLEAN)。
+    这个标记是后续裁决口径的关键, 抽样本身不做任何未来信息的筛选。
+
+    数据不够走完整个持仓周期的交易会被丢掉 (记在 STATS 里), 因为持有期被
+    截断的交易和跑满周期的交易不可比, 信号臂与安慰剂臂必须同一把尺子。
+    '''
     if signal_idx < 21 or signal_idx >= len(bars) - 1:
         return None
     if not liquid_enough(bars, signal_idx):
@@ -59,8 +73,21 @@ def run_entry(bars: pd.DataFrame, signal_idx: int, params: ExitParams):
                         e['initial_stop'], params, e['atr0'])
     if res['status'] != 'CLOSED':
         return None
+    if res.get('data_truncated'):
+        STATS['truncated'] += 1
+        return None
     res['entry_date'] = e['entry_date']
     res['entry_price'] = e['entry_price']
+    res['entry_idx'] = e['entry_idx']
+    if source_idx is None:
+        res['source_signal_day'] = str(bars['date'].iloc[signal_idx].date())
+        res['days_before_signal'] = 0
+        res['overlaps_source_signal'] = False
+    else:
+        res['source_signal_day'] = str(bars['date'].iloc[source_idx].date())
+        res['days_before_signal'] = int(source_idx - signal_idx)
+        res['overlaps_source_signal'] = bool(
+            e['entry_idx'] <= source_idx <= int(res['exit_idx']))
     return res
 
 
@@ -107,7 +134,7 @@ def control_same_stock(trades: pd.DataFrame, params: ExitParams,
         for ci in rng.sample(days, min(k, len(days))):
             if abs(ci - si) < 3:
                 continue
-            res = run_entry(b, ci, params)
+            res = run_entry(b, ci, params, source_idx=si)
             if res:
                 res.update({'arm': 'C2_同股异日', 'anchor': r.symbol,
                             'anchor_day': str(b['date'].iloc[ci].date()),
@@ -202,6 +229,7 @@ def main() -> None:
     print(f'C2 同股异日: {len(c2)} 笔')
     c3 = arm_not_selected(Path(args.ledger_dir), params)
     print(f'C3 同池未选中: {len(c3)} 笔')
+    print(f'因持仓期被数据截断而丢弃: {STATS["truncated"]} 笔')
     print()
 
     arms = {'T0_真实信号': t0, 'C1_同日随机': c1, 'C2_同股异日': c2,
@@ -209,9 +237,19 @@ def main() -> None:
     print('=== 安慰剂对照 ===')
     print(summarize_arms(arms).to_string(index=False))
     print()
+    from .verdict import block_boot, split_overlap
+    clean, overlap = split_overlap(c2)
+    if len(c2) and 'overlaps_source_signal' in c2.columns:
+        print(f'C2 拆桶: 干净桶 {len(clean)} 笔 {clean["net_ret"].mean()*100:+.3f}%  |  '
+              f'窗口含信号 {len(overlap)} 笔 {overlap["net_ret"].mean()*100:+.3f}%')
+        print()
     for other in ('C1_同日随机', 'C2_同股异日', 'C3_同池未选中'):
-        obs, lo, hi = boot_diff(t0, arms[other])
+        obs, lo, hi, _ = block_boot(t0, arms[other])
         print(f'T0 - {other}: 均值差 {obs*100:+.3f}%  95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]')
+    if len(clean):
+        obs, lo, hi, _ = block_boot(t0, clean)
+        print(f'T0 - C2 干净桶(主判据口径): 均值差 {obs*100:+.3f}%  '
+              f'95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]')
     print()
     for name, df in arms.items():
         df.to_csv(out / f'{name}.csv', index=False, encoding='utf-8-sig')

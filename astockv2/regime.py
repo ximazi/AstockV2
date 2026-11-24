@@ -147,21 +147,30 @@ def main() -> None:
     print()
 
     arms = {}
+    from .placebo_audit import mark_overlap
     t0 = pd.read_csv(cdir / 'T0_真实信号.csv')
     t0['ret_pct'] = t0['net_ret']
     arms['R1 真实信号 (重建)'] = attach_regime(t0, 'anchor_day', rmap)
-    for nm, f, daycol in (('R1 同日随机标的', 'C1_同日随机.csv', 'anchor_day'),
-                          ('R1 同股异日', 'C2_同股异日.csv', 'entry_date'),
-                          ('R1 同池未选中', 'C3_同池未选中.csv', 'anchor_day')):
+    c2 = pd.read_csv(cdir / 'C2_同股异日.csv')
+    c2['ret_pct'] = c2['net_ret']
+    c2 = mark_overlap(t0, c2)
+    c2_clean = c2[~c2['overlaps_any']]
+    arms['R1 同股异日'] = attach_regime(c2_clean, 'anchor_day', rmap)
+    arms['R1 同股异日·全部(含窗口重叠)'] = attach_regime(c2, 'anchor_day', rmap)
+    for nm, f in (('R1 同日随机标的', 'C1_同日随机.csv'),
+                  ('R1 同池未选中', 'C3_同池未选中.csv')):
         d = pd.read_csv(cdir / f)
         d['ret_pct'] = d['net_ret']
-        arms[nm] = attach_regime(d, daycol, rmap)
+        arms[nm] = attach_regime(d, 'anchor_day', rmap)
     sa = pd.read_csv(sdir / 's4_arm.csv')
     sa['ret_pct'] = sa['net_ret']
     arms['S4 信号'] = attach_regime(sa, 'anchor_day', rmap)
     sp = pd.read_csv(sdir / 's4_placebo.csv')
     sp['ret_pct'] = sp['net_ret']
-    arms['S4 同股异日'] = attach_regime(sp, 'entry_date', rmap)
+    sp = mark_overlap(sa, sp)
+    sp_clean = sp[~sp['overlaps_any']]
+    arms['S4 同股异日'] = attach_regime(sp_clean, 'anchor_day', rmap)
+    arms['S4 同股异日·全部(含窗口重叠)'] = attach_regime(sp, 'anchor_day', rmap)
 
     print('=== 各臂的市场环境构成 ===')
     rows = []
@@ -188,10 +197,13 @@ def main() -> None:
     print(by_regime(arms['S4 同股异日']).to_string(index=False))
     print()
     print('=== 剔除环境混杂后的差值 ===')
-    for tag, a, b in (('R1', arms['R1 真实信号 (重建)'], arms['R1 同股异日']),
-                      ('S4', arms['S4 信号'], arms['S4 同股异日'])):
+    print('主判据用干净桶 (安慰剂持仓窗口不含任何信号行情); 旧口径一并列出')
+    for tag, a, b, b_all in (('R1', arms['R1 真实信号 (重建)'], arms['R1 同股异日'],
+                              arms['R1 同股异日·全部(含窗口重叠)']),
+                             ('S4', arms['S4 信号'], arms['S4 同股异日'],
+                              arms['S4 同股异日·全部(含窗口重叠)'])):
         d, detail = standardize(a, b)
-        print(f'--- {tag}: 按真实成交的环境构成加权后的差值 {d*100:+.3f}% ---')
+        print(f'--- {tag}: 按真实成交的环境构成加权后的差值 (干净桶) {d*100:+.3f}% ---')
         print(detail.to_string(index=False))
         print()
         for reg in ('DOWN', 'UP'):
@@ -202,6 +214,16 @@ def main() -> None:
                 continue
             obs, lo, hi, days = block_boot(aa, bb)
             print(f'  {reg}: 差值 {obs*100:+.3f}%  95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]  '
+                  f'可比交易日 {days}')
+        print()
+        print(f'  [旧口径参考] {tag} 信号 vs 全部安慰剂 (含窗口重叠):')
+        for reg in ('DOWN', 'UP'):
+            aa = a[a['regime'] == reg]
+            bb = b_all[b_all['regime'] == reg]
+            if len(aa) < 10 or len(bb) < 10:
+                continue
+            obs, lo, hi, days = block_boot(aa, bb)
+            print(f'    {reg}: 差值 {obs*100:+.3f}%  95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]  '
                   f'可比交易日 {days}')
         print()
 

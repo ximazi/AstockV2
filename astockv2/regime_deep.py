@@ -26,6 +26,7 @@ def load_arms(control_dir: Path, s4_dir: Path, rmap: dict, prevmap: dict) -> dic
     对照臂的买入日往前推一个交易日, 才是它自己的决策日。
     '''
     arms = {}
+    from .verdict import split_overlap
     t0 = pd.read_csv(control_dir / 'T0_真实信号.csv')
     t0['ret_pct'] = t0['net_ret']
     arms['R1 真实信号'] = attach_regime(t0, 'anchor_day', rmap)
@@ -34,8 +35,9 @@ def load_arms(control_dir: Path, s4_dir: Path, rmap: dict, prevmap: dict) -> dic
     arms['R1 同日随机标的'] = attach_regime(c1, 'anchor_day', rmap)
     c2 = pd.read_csv(control_dir / 'C2_同股异日.csv')
     c2['ret_pct'] = c2['net_ret']
-    c2['decision_day'] = c2['entry_date'].astype(str).map(prevmap)
-    arms['R1 同股异日'] = attach_regime(c2, 'decision_day', rmap)
+    c2_clean, c2_over = split_overlap(c2)
+    arms['R1 同股异日'] = attach_regime(c2_clean, 'anchor_day', rmap)
+    arms['R1 同股异日·窗口含信号'] = attach_regime(c2_over, 'anchor_day', rmap)
     c3 = pd.read_csv(control_dir / 'C3_同池未选中.csv')
     c3['ret_pct'] = c3['net_ret']
     arms['R1 同池未选中'] = attach_regime(c3, 'anchor_day', rmap)
@@ -44,8 +46,9 @@ def load_arms(control_dir: Path, s4_dir: Path, rmap: dict, prevmap: dict) -> dic
     arms['S4 信号'] = attach_regime(sa, 'anchor_day', rmap)
     sp = pd.read_csv(s4_dir / 's4_placebo.csv')
     sp['ret_pct'] = sp['net_ret']
-    sp['decision_day'] = sp['entry_date'].astype(str).map(prevmap)
-    arms['S4 同股异日'] = attach_regime(sp, 'decision_day', rmap)
+    sp_clean, sp_over = split_overlap(sp)
+    arms['S4 同股异日'] = attach_regime(sp_clean, 'anchor_day', rmap)
+    arms['S4 同股异日·窗口含信号'] = attach_regime(sp_over, 'anchor_day', rmap)
     return arms
 
 
@@ -199,36 +202,16 @@ if __name__ == '__main__':
 
 def differential_robustness(sdir: Path, indices=('hs300', 'csi1000', 'sse'),
                             spans=(50, 100, 200), lookbacks=(5, 10, 20)) -> pd.DataFrame:
-    '''每个参数组合下, 分环境算 "S4 信号 - 同股异日安慰剂" 的差值与区间。'''
-    from .verdict import block_boot
-    prevmap = prev_trading_day_map('hs300')
-    rows = []
-    for idx in indices:
-        for span in spans:
-            for lb in lookbacks:
-                rf = regime_frame(idx, span, lb)
-                rmap = dict(zip(rf['date'].dt.strftime('%Y-%m-%d'), rf['regime']))
-                a = pd.read_csv(sdir / 's4_arm.csv')
-                a['ret_pct'] = a['net_ret']
-                a = attach_regime(a, 'anchor_day', rmap)
-                b = pd.read_csv(sdir / 's4_placebo.csv')
-                b['ret_pct'] = b['net_ret']
-                b['decision_day'] = b['entry_date'].astype(str).map(prevmap)
-                b = attach_regime(b, 'decision_day', rmap)
-                for reg in ('DOWN', 'UP'):
-                    aa, bb = a[a['regime'] == reg], b[b['regime'] == reg]
-                    if len(aa) < 20 or len(bb) < 20:
-                        continue
-                    obs, lo, hi, days = block_boot(aa, bb)
-                    rows.append({
-                        '指数': idx, 'EMA': span, '回看': lb, '环境': reg,
-                        '信号笔数': len(aa), '信号平均%': round(float(aa['ret_pct'].mean()) * 100, 3),
-                        '对照笔数': len(bb), '对照平均%': round(float(bb['ret_pct'].mean()) * 100, 3),
-                        '差值%': round(obs * 100, 3),
-                        '区间下界%': round(lo * 100, 3),
-                        '区间上界%': round(hi * 100, 3),
-                    })
-    return pd.DataFrame(rows)
+    '''每个参数组合下, 分环境算 "S4 信号 - 同股异日安慰剂" 的差值与区间。
+
+    直接复用 placebo_audit.config_scan, 保证两个工具的口径不会各说各话。
+    对照有三条口径: 干净桶(按源信号) / 干净桶(按同年任一信号) / 全部安慰剂。
+    旧口径(全部)让对照组提前上车拿走信号自己的行情, 基准被抬高。
+    '''
+    from .placebo_audit import config_scan
+    sig = pd.read_csv(sdir / 's4_arm.csv')
+    pbo = pd.read_csv(sdir / 's4_placebo.csv')
+    return config_scan(sig, pbo, indices=indices, spans=spans, lookbacks=lookbacks)
 
 
 def main3() -> None:
@@ -240,18 +223,24 @@ def main3() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     print('=== S4 信号 - 同股异日安慰剂, 分环境, 27 组参数 ===')
+    print('两条口径并排: 干净桶 = 安慰剂持仓窗口不含信号行情 (主判据); 全部 = 旧口径')
+    print()
     tab = differential_robustness(Path(args.s4_dir))
     tab.to_csv(out / 's4_regime_differential.csv', index=False, encoding='utf-8-sig')
-    for reg in ('DOWN', 'UP'):
-        sub = tab[tab['环境'] == reg]
-        pos = int((sub['差值%'] > 0).sum())
-        sig_pos = int((sub['区间下界%'] > 0).sum())
-        sig_neg = int((sub['区间上界%'] < 0).sum())
-        print(f'  {reg}: {len(sub)} 组参数, 差值为正 {pos} 组, 显著为正 {sig_pos} 组, 显著为负 {sig_neg} 组')
-        print('    ' + sub[['指数', 'EMA', '回看', '信号笔数', '信号平均%', '对照笔数',
-                          '对照平均%', '差值%', '区间下界%', '区间上界%']]
-              .to_string(index=False).replace('\n', '\n    '))
-    print()
+    for bucket in tab['对照口径'].unique():
+        for reg in ('DOWN', 'UP'):
+            sub = tab[(tab['对照口径'] == bucket) & (tab['环境'] == reg)]
+            if not len(sub):
+                continue
+            pos = int((sub['差值%'] > 0).sum())
+            sig_pos = int((sub['区间下界%'] > 0).sum())
+            sig_neg = int((sub['区间上界%'] < 0).sum())
+            print(f'  [{bucket}] {reg}: {len(sub)} 组参数, 差值为正 {pos} 组, '
+                  f'显著为正 {sig_pos} 组, 显著为负 {sig_neg} 组')
+            print('    ' + sub[['指数', 'EMA', '回看', '信号笔数', '信号平均%', '对照笔数',
+                              '对照平均%', '差值%', '区间下界%', '区间上界%']]
+                  .to_string(index=False).replace('\n', '\n    '))
+        print()
     print('输出: ' + str(out / 's4_regime_differential.csv'))
 
 

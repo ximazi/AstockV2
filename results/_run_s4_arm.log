@@ -1,0 +1,50 @@
+D:\Program Files\python310\lib\site-packages\numpy\lib\nanfunctions.py:1215: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+D:\Program Files\python310\lib\site-packages\numpy\lib\nanfunctions.py:1215: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+D:\Program Files\python310\lib\site-packages\numpy\lib\nanfunctions.py:1215: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+D:\Program Files\python310\lib\site-packages\numpy\lib\nanfunctions.py:1215: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+D:\Program Files\python310\lib\site-packages\numpy\lib\nanfunctions.py:1215: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+D:\Program Files\python310\lib\site-packages\numpy\lib\nanfunctions.py:1215: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+S4 信号 5494 条
+S4 信号重跑成交 5409 笔
+S4 同股异日对照 14911 笔
+S4 同日随机标的对照 14812 笔
+
+=== S4 信号 ===
+平均每笔 0.675%  胜率 43.8%  平均 0.086 R  笔数 5409
+
+=== 触达标签 vs 实际盈亏 ===
+       size        胜率%        平均%
+label                            
+FAIL   2899  12.590548  -6.622269
+WIN10   738  56.639566   0.569113
+WIN15  1772  89.559819  12.656350
+--- S4 走 R1 的 structure36_20 退出 ---
+  信号 5409 笔, 平均每笔 +0.675%, 胜率 43.8%, 平均 0.086 R
+  安慰剂[干净桶 CLEAN] 14087 笔, 平均每笔 +1.586%, 胜率 51.6%
+    信号 - 干净桶 CLEAN: -0.911%  95%[-1.769%, +0.033%]  可比交易日 437
+  安慰剂[窗口含信号 OVERLAP] 824 笔, 平均每笔 +8.049%, 胜率 79.5%
+    信号 - 窗口含信号 OVERLAP: -7.375%  95%[-8.519%, -6.380%]  可比交易日 361
+  安慰剂[全部安慰剂] 14911 笔, 平均每笔 +1.943%, 胜率 53.1%
+    信号 - 全部安慰剂: -1.268%  95%[-2.062%, -0.371%]  可比交易日 437
+
+S4 信号 - 同日随机标的: 差值 +0.066%  95%区间 [-0.549%, +0.638%]  可比交易日 346
+
+=== S4 原装 S4_LAD 退出 (-10% 止损, +10%/+20% 各卖 1/3, 60 日上限) ===
+S4 信号 5406 笔, 同股异日对照 14227 笔
+--- S4 原装 S4_LAD ---
+  信号 5406 笔, 平均每笔 +1.718%, 胜率 44.2%, 平均 0.172 R
+  安慰剂[干净桶 CLEAN] 11553 笔, 平均每笔 +2.493%, 胜率 48.7%
+    信号 - 干净桶 CLEAN: -0.775%  95%[-2.236%, +0.666%]  可比交易日 397
+  安慰剂[窗口含信号 OVERLAP] 2674 笔, 平均每笔 +14.144%, 胜率 88.6%
+    信号 - 窗口含信号 OVERLAP: -12.425%  95%[-14.102%, -10.825%]  可比交易日 377
+  安慰剂[全部安慰剂] 14227 笔, 平均每笔 +4.683%, 胜率 56.2%
+    信号 - 全部安慰剂: -2.965%  95%[-4.325%, -1.650%]  可比交易日 397
+
+
+输出: D:\AICode\AStockV2\results\s4_arm

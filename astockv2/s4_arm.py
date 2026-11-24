@@ -70,13 +70,39 @@ def arm_s4_placebo(signals: pd.DataFrame, params: ExitParams, k: int = 3,
         for ci in rng.sample(days, min(k, len(days))):
             if abs(ci - si) < 3:
                 continue
-            res = run_entry(b, ci, params)
+            res = run_entry(b, ci, params, source_idx=si)
             if res:
                 res.update({'arm': 'S4_同股异日', 'symbol': r.symbol,
                             'anchor_day': str(b['date'].iloc[ci].date()),
                             'label': '', 'year': r.year})
                 rows.append(res)
     return pd.DataFrame(rows)
+
+
+def report_arms(tag: str, a: pd.DataFrame, c: pd.DataFrame) -> None:
+    '''信号臂 vs 安慰剂, 安慰剂按"窗口含不含信号行情"拆开。'''
+    from .verdict import block_boot, split_overlap
+    clean, overlap = split_overlap(c)
+    print(f'--- {tag} ---')
+    if len(a):
+        print(f'  信号 {len(a)} 笔, 平均每笔 {a["net_ret"].mean()*100:+.3f}%, '
+              f'胜率 {(a["net_ret"]>0).mean()*100:.1f}%, 平均 {a["net_r"].mean():.3f} R')
+    for name, df in (('干净桶 CLEAN', clean),
+                     ('窗口含信号 OVERLAP', overlap),
+                     ('全部安慰剂', c)):
+        if not len(df):
+            continue
+        print(f'  安慰剂[{name}] {len(df)} 笔, 平均每笔 {df["net_ret"].mean()*100:+.3f}%, '
+              f'胜率 {(df["net_ret"]>0).mean()*100:.1f}%')
+        if len(a) and len(df) >= 20:
+            a2 = a.copy()
+            a2['ret_pct'] = a2['net_ret']
+            b2 = df.copy()
+            b2['ret_pct'] = b2['net_ret']
+            obs, lo, hi, days = block_boot(a2, b2)
+            print(f'    信号 - {name}: {obs*100:+.3f}%  '
+                  f'95%[{lo*100:+.3f}%, {hi*100:+.3f}%]  可比交易日 {days}')
+    print()
 
 
 def main() -> None:
@@ -91,6 +117,11 @@ def main() -> None:
     params = ExitParams(stop_atr=2.0, trail='low10', activate_atr=2.0,
                          targets=((3.0, 0.5), (6.0, 0.25)), horizon=20,
                          cost_bp=30.0, slippage_bp=3.0)
+
+    # S4 原装退出: -10% 止损, +10%/+20% 各卖 1/3, 剩余 1/3 持有到 60 日上限
+    lad = ExitParams(stop_pct=0.10, trail='none', activate_atr=2.0,
+                     targets=(), targets_pct=((0.10, 1.0/3), (0.20, 1.0/3)),
+                     horizon=60, cost_bp=30.0, slippage_bp=3.0)
 
     sig = load_signals()
     if args.sample:
@@ -117,23 +148,8 @@ def main() -> None:
             print()
             print('=== 触达标签 vs 实际盈亏 ===')
             print(g[['size', '胜率%', '平均%']].to_string())
-    if len(c):
-        print()
-        print('=== S4 同股异日对照 ===')
-        print(f"平均每笔 {c['net_ret'].mean()*100:.3f}%  胜率 {(c['net_ret']>0).mean()*100:.1f}%  "
-              f"平均 {c['net_r'].mean():.3f} R  笔数 {len(c)}")
+    report_arms('S4 走 R1 的 structure36_20 退出', a, c)
 
-    if len(a) and len(c):
-        from .verdict import block_boot
-        a2 = a.copy()
-        a2['ret_pct'] = a2['net_ret']
-        c2 = c.copy()
-        c2['ret_pct'] = c2['net_ret']
-        obs, lo, hi, days = block_boot(a2, c2)
-        print()
-        print(f'S4 信号 - 同股异日: 差值 {obs*100:+.3f}%  '
-              f'95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]  可比交易日 {days}')
-        print('主判据 (区间下界 > 0): ' + ('通过' if lo > 0 else '不通过'))
     if len(a) and len(d):
         from .verdict import block_boot
         a2 = a.copy()
@@ -143,10 +159,19 @@ def main() -> None:
         obs, lo, hi, days = block_boot(a2, d2)
         print(f'S4 信号 - 同日随机标的: 差值 {obs*100:+.3f}%  '
               f'95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]  可比交易日 {days}')
+        print()
+
+    print('=== S4 原装 S4_LAD 退出 (-10% 止损, +10%/+20% 各卖 1/3, 60 日上限) ===')
+    la = arm_s4(sig, lad)
+    lc = arm_s4_placebo(sig, lad, args.k)
+    print(f'S4 信号 {len(la)} 笔, 同股异日对照 {len(lc)} 笔')
+    report_arms('S4 原装 S4_LAD', la, lc)
 
     a.to_csv(out / 's4_arm.csv', index=False, encoding='utf-8-sig')
     c.to_csv(out / 's4_placebo.csv', index=False, encoding='utf-8-sig')
     d.to_csv(out / 's4_same_day.csv', index=False, encoding='utf-8-sig')
+    la.to_csv(out / 's4_lad_arm.csv', index=False, encoding='utf-8-sig')
+    lc.to_csv(out / 's4_lad_placebo.csv', index=False, encoding='utf-8-sig')
     print()
     print('输出: ' + str(out))
 

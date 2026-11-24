@@ -24,7 +24,18 @@ DEFAULT_LEDGER_DIR = V1_RESULTS / '20261119_validated'
 
 V0 = ExitParams(stop_atr=2.0, trail='low10', activate_atr=2.0,
                 targets=((3.0, 0.5), (6.0, 0.25)), horizon=20,
-                cost_bp=30.0, slippage_bp=0.0)
+                cost_bp=30.0, slippage_bp=0.0, use_adjusted=False)
+
+
+def fidelity_params() -> ExitParams:
+    '''与 v1 账本对账用的口径: 原始价、无滑点。
+
+    v1 记账用的是未复权价且没有滑点, 所以复现基线必须锁在这套口径上;
+    退出规则变体则跑在生产口径 (复权 + 滑点) 上, 与验收链一致。
+    '''
+    return ExitParams(stop_atr=2.0, trail='low10', activate_atr=2.0,
+                      targets=((3.0, 0.5), (6.0, 0.25)), horizon=20,
+                      cost_bp=30.0, slippage_bp=0.0, use_adjusted=False)
 
 
 def load_trades(ledger_dir: Path) -> pd.DataFrame:
@@ -42,27 +53,37 @@ def load_trades(ledger_dir: Path) -> pd.DataFrame:
 
 
 def rerun(trades: pd.DataFrame, params: ExitParams) -> pd.DataFrame:
-    '''用给定退出规则重跑每笔冻结入场。'''
+    '''用给定退出规则重跑每笔冻结入场。
+
+    账本冻结的是原始价的入场价与止损位。复权口径下要把这两个价格按入场日
+    的复权因子折算过去, 否则止损距离会错。
+    '''
     recs = []
     for r in trades.itertuples(index=False):
         b = load_bars(r.symbol)
         ei = index_of(b, r.entry)
         if ei < 1:
             continue
-        atr0 = float(b['atr20'].iloc[ei - 1])
+        use_adj = params.use_adjusted and 'adj_open' in b.columns
+        atr0 = float(b['atr20_adj' if use_adj else 'atr20'].iloc[ei - 1])
         if not atr0 or atr0 != atr0:
             continue
+        entry_price = float(r.price)
         stop = float(r.price - (r.risk / r.qty))
+        if use_adj:
+            scale = float(b['adj_scale'].iloc[ei])
+            entry_price = entry_price * scale
+            stop = stop * scale
         if params.stop_source == 'atr':
-            stop = float(r.price - params.stop_atr * atr0)
-        res = simulate_exit(b, ei, float(r.price), stop, params, atr0)
+            stop = entry_price - params.stop_atr * atr0
+        res = simulate_exit(b, ei, entry_price, stop, params, atr0)
         res.update({'symbol': r.symbol, 'day': r.day, 'year': r.year,
                     'arm': r.arm, 'entry': r.entry, 'ledger_exit': r.exit,
                     'ledger_reason': r.reason, 'ledger_pnl': r.pnl,
                     'notional': r.notional})
         if res['status'] == 'CLOSED':
             res['pnl'] = res['net_ret'] * r.notional
-            res['net_r'] = res['net_ret'] * r.price / (r.price - stop)
+            res['net_r'] = res['net_ret'] * entry_price / (entry_price - stop)
         recs.append(res)
     return pd.DataFrame(recs)
 
@@ -143,7 +164,7 @@ def main() -> None:
     print(f'冻结成交 {len(trades)} 笔')
     print()
 
-    base = rerun(trades, V0)
+    base = rerun(trades, fidelity_params())
     fidelity(base)
     base.to_csv(out / 'baseline_replay.csv', index=False, encoding='utf-8-sig')
 
@@ -162,7 +183,7 @@ def main() -> None:
             per_year.append(r)
         df.to_csv(out / f'variant_{name}.csv', index=False, encoding='utf-8-sig')
 
-    print('=== 退出规则变体对比 (入场冻结, 只改退出) ===')
+    print('=== 退出规则变体对比 (入场冻结, 只改退出; 复权价 + 3bp 滑点) ===')
     print(pd.DataFrame(rows).to_string(index=False))
     print()
     print('=== 分年分臂 ===')
