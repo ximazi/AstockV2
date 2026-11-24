@@ -69,6 +69,33 @@ S4 追启动日开盘系统性差约 1%/笔 (分环境的"信号 - 安慰剂"差
 | `项目说明_大富翁系统.md` | 项目现状总纲 |
 | `mainwave_core_20261124.txt` | v1 主引擎核心代码合并（paper / ranking / ranking_shadow / allocation / rules / s4_scan / route_scan，逐字复制，带分隔标记与 SHA-256，可按 `FILE:` 切回单文件）。用 `python merge_core.py` 重新生成 |
 
+## 评审批次合并
+
+评审用的代码按优先级分 4 批交付，每批一个 `.txt`，内容逐字复制（按字节保留原换行符），
+带 `FILE:` / `LINES:` / `SHA256[:16]` / `BYTES:` / `SOURCE:` 分隔标记，文件头写明该批的
+重点审计目标，可按 `FILE:` 切回单文件。
+
+| 批次 | 文件 | 合并产物 | 重点审计目标 |
+| --- | --- | --- | --- |
+| 1 | 7 个 | `mainwave_core_20261124.txt` | 主引擎核心代码 |
+| 2 | 8 个 | `mainwave_batch2_signal_audit_20261124.txt` | R1 83.5% 漏失窗口与归因口径、原突破位与 2ATR 实现、S4 回放是否存在未来泄漏及排除月份条件 |
+| 3 | 6 个 | `mainwave_batch3_trading_gates_20261124.txt` | 缺失数据降级是否阻断下单、AUTO100W/NEW100K/旧虚拟账隔离、盘后退出与大盘/中期趋势门逻辑 |
+| 4 | 8 个 | `mainwave_batch4_acceptance_20261124.txt` | 独立验收引擎的撮合假设、对照组严谨性，以及与主引擎 `mainwave_engine` 的口径一致性 |
+
+```bash
+python merge_batches.py          # 重新生成第 2/3/4 批
+python merge_batches.py 3        # 只重生成某一批
+python verify_batches.py         # 校验每个文件与磁盘源文件逐字节一致 + 目录行号对齐
+```
+
+第 1 批由 `merge_core.py` 生成，`merge_batches.py` 只管第 2/3/4 批。
+
+**来源状态说明**：第 2/3 批取自 v1 工作区 `D:/AICode/Astock` 的**当前磁盘状态**。
+其中 `mainwave_engine/trading/daily.py` 与 `mainwave_engine/index_trend.py`
+在 `mainwave_code_v2.26.0_20261124` 快照之后又被改过（跌停价参考读取、
+`ST_LIMIT_REFERENCE_WAIT` 拦截、指数日线收盘价有效性校验），与快照里的同名文件不同，
+合并文件以较新的磁盘内容为准，并在文件头注明。
+
 ## 外部依赖
 
 本目录的脚本**只读** v1 工作区 `D:/AICode/Astock` 的行情归档与研究产物,

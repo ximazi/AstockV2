@@ -1,0 +1,1965 @@
+大富翁系统 评审批次合并 · 第 3 批 · 交易执行与风控门（6 个文件）
+
+生成日期: 2026-11-24
+来源: D:/AICode/Astock（v1 工作区，含未提交改动的当前状态）
+说明: 每个文件的内容逐字复制，未做任何改动；分隔线之间是完整文件内容。
+      按 "FILE:" 标记可以把本文件切回单个文件。
+
+重点审计目标: 缺失数据降级是否阻断下单、AUTO100W/NEW100K/旧虚拟账隔离、盘后退出与大盘/中期趋势门逻辑
+
+来源状态: 本批取自 v1 工作区当前磁盘状态。其中 mainwave_engine/trading/daily.py 与 mainwave_engine/index_trend.py 在 mainwave_code_v2.26.0_20261124 快照之后又被改过（跌停价参考读取、ST_LIMIT_REFERENCE_WAIT 拦截、指数日线收盘价有效性校验），与快照里的同名文件不同，本文件以较新的磁盘内容为准。
+
+目录（起始行号指本文件里 "FILE:" 标记所在行）:
+      22    443 行  mainwave_engine/trading/daily.py
+     471    237 行  mainwave_engine/trading/preflight.py
+     714    251 行  mainwave_engine/trading/books.py
+     971    451 行  mainwave_engine/trading/position_monitor.py
+    1428    104 行  mainwave_engine/index_trend.py
+    1538    424 行  mainwave_engine/virtual_portfolio.py
+
+合计 6 个文件、1910 行、120441 字节源码。
+====================================================================================================
+FILE: mainwave_engine/trading/daily.py
+LINES: 443  SHA256[:16]: 2c14c99c5acf6723  BYTES: 29817
+SOURCE: D:\AICode\Astock\mainwave_engine\trading\daily.py
+====================================================================================================
+"""Incremental closure step after lifecycle analysis; never connects to a broker."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import pandas as pd
+from . import (VERSION, store, knowledge, ranking, paper, preflight,
+               continuity, diagnostics, explain, validation, rules, adds, runner,
+               migrations, performance, experiments, corporate_actions, brief, books, jev, ranking_shadow, market_policy, shadow_inputs)
+
+
+def read(path):
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+
+
+def write(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(store.encoded(payload), encoding="utf-8")
+    temp.replace(path)
+
+
+def benchmark(data_root, day):
+    path = data_root / "000300_SH_index.csv"
+    if not path.exists():
+        return {}
+    f = pd.read_csv(path)
+    f["day"] = pd.to_datetime(f.trade_date.astype(str)).dt.strftime("%Y-%m-%d")
+    f = f[f.day.le(day)].sort_values("day").drop_duplicates("day")
+    if len(f) < 21 or f.day.iloc[-1] != day:
+        return {}
+    c = pd.to_numeric(f.close, errors="coerce")
+    return {"name": "CSI300", "as_of": day, "return5": ranking.number((c.iloc[-1] / c.iloc[-6] - 1) * 100),
+            "return20": ranking.number((c.iloc[-1] / c.iloc[-21] - 1) * 100)}
+
+
+def load_features(records, data_root, day):
+    metrics = {}
+    for i, row in enumerate(records, 1):
+        try:
+            metrics[row["symbol"]] = ranking.features(ranking.prices(data_root / f"{row['symbol']}_daily.csv", day), day)
+        except (OSError, ValueError, KeyError, AttributeError):
+            metrics[row["symbol"]] = {"status": "DATA_WAIT"}
+        if i % 200 == 0:
+            print(f"[trading] rank features {i}/{len(records)}", flush=True)
+    return metrics
+
+
+def monitor_paper(day, db=store.DB_PATH, data_root=None):
+    """EOD decisions use actual paper fills; orders run at a later session's open."""
+    from .. import route_evidence as RE, exit_policy as XP
+    data_root = Path(data_root or store.ROOT / "data")
+    with paper.database(db) as conn:
+        account = conn.execute("SELECT * FROM paper_account").fetchone()
+        if not account:
+            return {"status": "UNCONFIGURED", "live_orders_enabled": False}
+        last = conn.execute("SELECT MAX(as_of) FROM paper_valuations").fetchone()[0]
+        if last and day < last:
+            return {"status": "HISTORICAL_NO_ACCOUNT_REWIND", "last_day": last}
+        plans = [json.loads(r[0]) for r in conn.execute("SELECT p.payload FROM paper_plans p WHERE EXISTS (SELECT 1 FROM paper_lots l WHERE l.plan_id=p.id AND l.remaining>0) OR EXISTS (SELECT 1 FROM paper_orders o WHERE o.plan_id=p.id AND o.status IN ('OPEN','PARTIAL','EXIT_BLOCKED','UNKNOWN'))")]
+        frames, bars, issues = {}, {}, []
+        limits = {}
+        limit_path = data_root.parent / "results/intraday/reference" / f"stk_limit_{day.replace('-', '')}.json"
+        try:
+            ref = read(limit_path)
+            if ref.get("api") == "stk_limit" and ref.get("as_of") == day and ref.get("status") in {"AVAILABLE", "PARTIAL"}:
+                from ..intraday_quotes import symbol_of
+                limits = {symbol_of(r["ts_code"]): ranking.number(r.get("down_limit")) for r in ref.get("records", [])}
+        except (OSError, ValueError, KeyError, AttributeError, TypeError):
+            pass
+        index_path = data_root / "000300_SH_index.csv"
+        previous_market_day, index_days = None, []
+        if index_path.exists():
+            index = pd.read_csv(index_path)
+            index_days = sorted(set(pd.to_datetime(index.trade_date.astype(str)).dt.strftime("%Y-%m-%d")))
+            earlier = [d for d in index_days if d < day]
+            previous_market_day = earlier[-1] if earlier and day in index_days else None
+        if plans and not previous_market_day:
+            issues.append("NO_VERIFIED_MARKET_SESSION")
+        for plan in plans:
+            symbol = plan["symbol"]
+            if symbol in frames:
+                continue
+            try:
+                raw = ranking.prices(data_root / f"{symbol}_daily.csv", day)
+                if raw.empty or raw.date.iloc[-1] != day:
+                    raise ValueError("当日行情缺失")
+                r = raw.iloc[-1]
+                if not all((ranking.number(r.get(k)) or 0) > 0 for k in ("open", "high", "low", "close", "preclose", "volume")):
+                    raise ValueError("行情价格或成交量无效")
+                raw["date"] = pd.to_datetime(raw.date)
+                frames[symbol] = RE.build(raw, symbol)
+                since = conn.execute("SELECT MIN(entry_day) FROM paper_lots WHERE symbol=? AND remaining>0", (symbol,)).fetchone()[0]
+                changed = raw.preclose.div(raw.close.shift()).sub(1).abs().gt(.001)
+                if since:
+                    # Inferred from price only; the ledger moves after a human confirms the event kind,
+                    # and only an unconfirmed event keeps blocking the position.
+                    for inferred in corporate_actions.detect(raw, since=since):
+                        corporate_actions.record(conn, plan["id"], inferred)
+                    corporate_action = bool(corporate_actions.pending_for(conn, plan["id"]))
+                else:
+                    corporate_action = bool(changed.iloc[-1])
+                main_active = ranking.number(r.get("tradestatus")) == 1 and bool(paper.re.fullmatch(r"(?:sh_60|sz_00)\d{4}", symbol))
+                st = ranking.number(r.get("isST"))
+                if main_active and st == 1 and not (0 < (limits.get(symbol) or 0) < float(r.preclose)):
+                    issues.append(f"{symbol}: ST_LIMIT_REFERENCE_WAIT")
+                bars[symbol] = {"date": day, "open": float(r.open), "preclose": float(r.preclose), "raw_verified": True,
+                    "previous_market_day": previous_market_day,
+                    "ordinary_mainboard": main_active and st == 0 and not any(x in plan["name"].upper() for x in ("ST", "退")),
+                    "risk_warning_mainboard": main_active and st == 1, "down_limit": limits.get(symbol),
+                    "volume": float(r.volume),
+                    "corporate_action": corporate_action}
+            except (OSError, ValueError, KeyError, AttributeError) as exc:
+                issues.append(f"{symbol}: {exc}")
+        # A per-day checkpoint makes reruns idempotent, including partially filled exits.
+        checkpoint = "PAPER_OPEN:" + day
+        if not conn.execute("SELECT 1 FROM paper_events WHERE id=?", (checkpoint,)).fetchone():
+            paper.process_open(conn, day, bars)
+            if not issues and previous_market_day:
+                paper.event(conn, "OPEN_PROCESSED", {"day": day}, checkpoint)
+        market = XP.market_frame(index, day) if index_path.exists() else pd.DataFrame(
+            columns=["market_strong", "market_weak", "market_ret20"], index=pd.DatetimeIndex([]))
+        for plan in plans:
+            pid = plan["id"]
+            lots = list(conn.execute("SELECT * FROM paper_lots WHERE plan_id=? ORDER BY entry_day,id", (pid,)))
+            remaining = sum(r["remaining"] for r in lots)
+            if not lots or not remaining:
+                continue
+            f = frames.get(plan["symbol"])
+            problems = []
+            if f is None or f.empty:
+                problems.append("PRICE_DATA_WAIT")
+            # Changed exit code never re-judges an old plan; only its deterministic floors keep running.
+            rules_review = plan["exit_code_hashes"] != paper.source_fingerprint()
+            if rules_review:
+                issues.append(f"{plan['symbol']}: FROZEN_RULE_MISMATCH_REQUIRES_REVIEW")
+            if bars.get(plan["symbol"], {}).get("corporate_action"):
+                problems.append("CORPORATE_ACTION_RECONCILIATION_REQUIRED")
+            if not index_days or day not in index_days:
+                problems.append("MARKET_CALENDAR_WAIT")
+            if f is not None and not f.empty:
+                available_days = set(f.date.dt.strftime("%Y-%m-%d"))
+                if any(d not in available_days for d in index_days if lots[0]["entry_day"] <= d <= day):
+                    problems.append("POSITION_HISTORY_GAP")
+            if problems:
+                valuation = {"day": day, "status": "DATA_WAIT", "remaining": remaining,
+                             "reasons": problems + (["FROZEN_RULE_MISMATCH_REQUIRES_REVIEW"] if rules_review else [])}
+                paper.event(conn, "POSITION_DATA_WAIT", {"plan_id": pid, **valuation})
+                issues.extend(f"{plan['symbol']}: {x}" for x in problems)
+            else:
+                f = XP.enrich(f.reset_index(drop=True), market)
+                days = f.date.dt.strftime("%Y-%m-%d").tolist()
+                entry_day = lots[0]["entry_day"]
+                if entry_day not in days:
+                    raise ValueError(f"{pid}: 首仓行情缺失，不能重建退出依据")
+                entry = days.index(entry_day)
+                scale = float(f.close.iloc[entry] / f.index_close.iloc[entry])
+                atr = plan["atr_cents"] / 100 / scale
+                structure = plan["structure_cents"] / 100 / scale
+                # Boundaries stay in the units of the entry day; after a confirmed share event every lot is in
+                # current units, so lots map into the adjusted index space through the event factor.
+                adjust = 1.
+                for action in corporate_actions.applied(conn):
+                    if action["plan_id"] == pid and action["applied"]["kind"] == "SHARE_EVENT":
+                        adjust *= float(action["applied"]["factor"])
+                lot_scale = scale / adjust
+
+                def cost_on(d):
+                    """Average cost of the lots filled up to day d, so history is replayed as it was."""
+                    held = [r for r in lots if r["entry_day"] <= d]
+                    return sum(r["quantity"] * r["price_cents"] for r in held) / sum(r["quantity"] for r in held) / 100 / lot_scale
+
+                # The hard floor is frozen on the first fill; a cheaper add lowers the average, never the floor.
+                price = cost_on(entry_day)
+                hard = max(price - 2 * atr, plan["stop_cents"] / 100 / scale)
+                a = {c: f[c].to_numpy() for c in f.columns}
+                peak, soft, pending, breaches, required = price, hard, "", 0, 1
+                sold_reasons = {json.loads(r[0])["reason"] for r in conn.execute("SELECT payload FROM paper_orders WHERE plan_id=? AND side='SELL' AND filled>0", (pid,))}
+                reduced = "RISK_REDUCTION" in sold_reasons
+                reduction = False
+                for j in range(entry, len(f)):
+                    price = cost_on(days[j])
+                    if a["index_low"][j] <= hard:
+                        pending = pending or "INITIAL_STOP"
+                    if a["index_close"][j] < structure:
+                        pending = pending or "INITIAL_STRUCTURE_FAILED"
+                    if not rules_review:
+                        review = XP.close_review(a, j, entry, price, atr, peak, soft_stop=soft, breaches=breaches,
+                            required=required, pending_exit=pending, pending_reduce=reduction, reduced=reduced)
+                        soft, breaches, required = (review[k] for k in ("soft_stop", "breaches", "required"))
+                        pending, reduction = review["pending_exit"], review["pending_reduce"]
+                    peak = max(peak, float(a["index_high"][j]))
+                    if j - entry + 1 >= 60:
+                        pending = pending or "HORIZON"
+                reduction_reason = ""
+                if pending:
+                    paper.queue_exit(conn, pid, day, pending)
+                elif not rules_review:
+                    # Discretionary reductions and targets belong to the exit policy; they wait for review.
+                    if reduction:
+                        reduction_reason = "RISK_REDUCTION"
+                        paper.queue_exit(conn, pid, day, "RISK_REDUCTION", .5)
+                    elif peak >= price + 3 * atr and "TARGET_3ATR" not in sold_reasons:
+                        reduction_reason = "TARGET_3ATR"
+                        paper.queue_exit(conn, pid, day, "TARGET_3ATR", .5)
+                    elif peak >= price + 6 * atr and "TARGET_6ATR" not in sold_reasons:
+                        reduction_reason = "TARGET_6ATR"
+                        paper.queue_exit(conn, pid, day, "TARGET_6ATR", .5)
+                mark = paper.cents(f.close.iloc[-1])
+                ratio = float(f.close.iloc[-1] / f.index_close.iloc[-1])
+                valuation = {"day": day,
+                             "status": ("EXIT_REQUIRED" if pending else "REDUCE_REQUIRED" if reduction_reason
+                                        else "RULES_REVIEW_HOLD" if rules_review else "HOLD"),
+                             "reason": pending or reduction_reason or ("FROZEN_RULE_MISMATCH_REQUIRES_REVIEW" if rules_review else ""),
+                             "remaining": remaining, "mark_cents": mark, "market_value_cents": mark * remaining,
+                             "hard_floor": hard * ratio, "soft_floor": soft * ratio,
+                             "cost_basis_cents": int(round(price * lot_scale * 100)),
+                             "deterministic_only": rules_review,
+                             "policy_version": plan["exit_version"], "held_sessions": len(f) - entry}
+            vid = store.digest([pid, valuation])
+            conn.execute("INSERT OR IGNORE INTO paper_valuations VALUES (?,?,?,?)", (vid, day, pid, store.encoded(valuation)))
+        # D07: adds are evaluated only after an actual fill, under the plan's dispatched rules.
+        account, cfg = paper._account(conn)
+        exposures = paper._exposure(conn)
+        add_rows = []
+        for plan in plans:
+            dispatch = rules.dispatch(plan, db, conn=conn)
+            frame = frames.get(plan["symbol"])
+            if frame is None or frame.empty:
+                add_rows.append({"plan_id": plan["id"], "status": "DATA_WAIT",
+                                 "stop_reason": "PRICE_DATA_WAIT", "dispatch": dispatch["status"]})
+                continue
+            enriched = XP.enrich(frame.reset_index(drop=True), market)
+            evaluation = adds.evaluate(conn, plan, enriched, index_days, day, exposures,
+                                       account, cfg, dispatch["status"])
+            evaluation["dispatch"] = dispatch["status"]
+            if evaluation["status"] == "ADD_CONFIRMED":
+                evaluation["placed"] = adds.queue(conn, plan, evaluation, account, cfg)
+            add_rows.append(evaluation)
+        return {"status": "DATA_WAIT" if issues else "SUCCESS", "issues": issues,
+                "adds": add_rows, "live_orders_enabled": False}
+
+
+def live_run(day, clock=None):
+    """Books place orders only from `day`'s official close until 09:00 of the next weekday. A closure that runs
+    past midnight is still that day's closure (its orders target the next open); a later rerun only reconstructs.
+    A holiday on the next weekday closes the window early, which errs toward placing nothing."""
+    clock = (clock or store.now())[:16]
+    nxt = pd.Timestamp(day) + pd.Timedelta(days=1)
+    while nxt.weekday() >= 5:
+        nxt += pd.Timedelta(days=1)
+    return f"{day}T15:00" <= clock < f"{nxt.date().isoformat()}T09:00"
+
+
+def evaluate_rankings(day, db=store.DB_PATH, data_root=None):
+    """Delegates to the D05 evaluator; the window is fixed on market days, never slid."""
+    from . import validation
+    return validation.evaluate(day, db, data_root)
+
+
+def run(day, db=store.DB_PATH, root=store.ROOT, monitor=True):
+    day = pd.Timestamp(day).date().isoformat()
+    if day > store.now()[:10] or (day == store.now()[:10] and store.now()[11:16] < "15:00"):
+        raise ValueError("收盘闭环不能使用未来或未收盘日期")
+    lock = runner.acquire(f"after_close:{day}", db)
+    if not lock["acquired"]:
+        raise ValueError(f"另一次收盘运行正在进行：{lock['owner']}（{lock.get('reason', '')}）")
+    # Whatever fails, the failure is on record and the lock is released; a rerun never waits out the timeout.
+    try:
+        return _closure(day, db, root, monitor, lock)
+    except BaseException as exc:
+        try:
+            runner.checkpoint(day, "AFTER_CLOSE", "closure", "FAILED", {"error": str(exc)[:500]}, db)
+        except Exception:
+            pass
+        raise
+    finally:
+        runner.release(f"after_close:{day}", db)
+
+
+def _closure(day, db, root, monitor, lock):
+    output = root / "results/mainwave_engine" / day.replace("-", "")
+    data_root = root / "data"
+    # D01: required inputs are checked before anything is recorded; degraded items stay named.
+    schema = migrations.upgrade(db)
+    startup = preflight.check(day, root, db, data_root)
+    write(output / "closure_preflight.json", startup)
+    runner.checkpoint(day, "AFTER_CLOSE", "preflight", "DONE", {"status": startup["status"]}, db)
+    if startup["status"] == "BLOCKED":
+        raise ValueError(f"启动自检未通过，缺少必要输入：{'、'.join(startup['blocking'])}")
+    universe, evidence = (read(output / name) for name in ("analysis_universe.json", "analysis_evidence.json"))
+    if universe["as_of"] != day:
+        raise ValueError("日报日期不匹配")
+    registry = knowledge.build(root)
+    registry_id = knowledge.persist(registry, db)
+    rule_set = rules.register(db, root)
+    with store.connect(db) as conn:
+        prior = store.latest(conn, (pd.Timestamp(day) - pd.Timedelta(days=1)).date().isoformat())
+    leaders = {}
+    path = output / "leader_state_daily.csv"
+    if path.exists():
+        f = pd.read_csv(path).fillna("")
+        for row in f.to_dict("records"):
+            if row.get("as_of") == day:
+                leaders.setdefault(row.get("leader"), []).append(row)
+    payload = ranking.build(universe, evidence, load_features(universe["records"], data_root, day), benchmark(data_root, day), prior, leaders)
+    if day == store.now()[:10]:
+        payload["observation_basis"] = "FORWARD_RECORDED_AFTER_CLOSE"
+    payload["knowledge_registry_id"] = registry_id
+    payload["code_sha256"] = hashlib.sha256(Path(ranking.__file__).read_bytes()).hexdigest()
+    payload["source_hashes"] = {name: hashlib.sha256((output / name).read_bytes()).hexdigest() for name in ("analysis_universe.json", "analysis_evidence.json")}
+    snap = store.persist(payload, db)
+    write(root / "results/trading_system/knowledge_registry.json", registry)
+    write(output / "trading_closure.json", snap)
+    sessions = preflight._calendar(data_root, day)[0] or []
+    # D02-D05: continuity, per-step route cards, rank explanation and forward validation.
+    chain = continuity.advance(snap, db, sessions)
+    write(output / "opportunity_continuity.json", chain)
+    # Shadow layer: layered screening, market policy dimensions, entry-contract drafts, discovery register.
+    # None of it changes states, ranks or permissions; a failure here never blocks the closure.
+    shadow, watch = None, []
+    try:
+        prior_day = str((prior or {}).get("as_of", "")).replace("-", "")
+        prior_shadow_path = root / "results/mainwave_engine" / prior_day / "ranking_shadow.json"
+        watch_path = output / "preparation_watch.csv"
+        watch = pd.read_csv(watch_path, encoding="utf-8-sig").to_dict("records") if watch_path.exists() else []
+        prior_facts = shadow_inputs.previous_review_facts(root, prior_day)
+        shadow = ranking_shadow.evaluate(snap, read(prior_shadow_path) if prior and prior_shadow_path.exists() else None, watch,
+                                         theme_facts=prior_facts.get("themes"))
+        write(output / "ranking_shadow.json", shadow)
+        policy = market_policy.evaluate(snap.get("market", {}), (prior_facts.get("sentiment") or {}).get("metrics"),
+                                        (prior_facts.get("loss_effects") or {}).get("events"), prior_facts.get("as_of"))
+        write(output / "market_policy.json", policy)
+        drafts = shadow_inputs.contract_drafts(snap, day, sessions, output)
+        write(output / "entry_contract_drafts.json", drafts)
+        shadow_summary = {"status": "SUCCESS", **{k: shadow["summary"][k] for k in ("total", "re_eligible", "cohort_strong", "top10_overlap_with_frozen")},
+                          "review_shortlist": [x["symbol"] for x in shadow["summary"]["review_shortlist"]],
+                          "preparation_watch": shadow["summary"]["preparation_watch"], "contract_drafts": drafts["summary"],
+                          "market_policy": {e: policy["policy"].get(e, {}).get("shadow") for e in ("E1", "E2", "E3")}}
+    except Exception as exc:  # a shadow must never block the closure
+        shadow_summary = {"status": "FAILED", "error": str(exc)[:300]}
+    cards = diagnostics.report(snap)
+    write(output / "route_diagnostics.json", cards)
+    board = explain.board(snap, prior)
+    write(output / "ranking_explained.json", board)
+    runner.renew(f"after_close:{day}", db)
+    review = validation.evaluate(day, db, data_root)
+    write(output / "ranking_validation.json", review)
+    audit = {"protocols": validation.protocols(root), "ablation": validation.ablate(day, root),
+             "missed": validation.missed_audit(day, db, data_root)}
+    write(output / "validation_audit.json", audit)
+    runner.renew(f"after_close:{day}", db)
+    paper_status = monitor_paper(day, db, data_root) if monitor else {"status": "NOT_RUN"}
+    # Three books apart: SIGNAL records the mechanical trade set, AUTO executes it without a person,
+    # MANUAL is this ledger. Only a same-day run lets the auto book place orders.
+    signal = books.record_signal(day, snap, db)
+    auto = (books.run_auto(day, payload, snap, root, data_root, live=live_run(day), signal=signal, main_db=db)
+            if monitor else {"status": "NOT_RUN", "book": "AUTO"})
+    try:
+        new100k = (books.run_new100k(day, payload, snap, root, data_root, live=live_run(day), signal=signal, main_db=db)
+                   if monitor else {"status": "NOT_RUN", "book": "NEW100K"})
+    except Exception as exc:  # the compounding book must never block the closure or the other books
+        new100k = {"status": "FAILED", "book": "NEW100K", "error": str(exc)[:300]}
+    try:
+        register = shadow_inputs.discovery_register(root, day, snap, shadow, watch, auto, sessions)
+        write(output / "discovery_events.json", register)
+        shadow_summary["discovery"] = register["summary"]
+    except Exception as exc:  # the register is an observation artefact; its failure is recorded, not raised
+        shadow_summary["discovery"] = {"status": "FAILED", "error": str(exc)[:300]}
+    status = {"as_of": day, "version": VERSION, "snapshot_id": snap["snapshot_id"], "ranking": snap["summary"],
+              "validation": review["summary"], "knowledge": registry["summary"], "paper": paper_status,
+              "preflight": {"status": startup["status"], "blocking": startup["blocking"],
+                            "degraded": startup["degraded"]},
+              "continuity": chain["summary"], "diagnostics": cards["summary"], "shadow_screening": shadow_summary,
+              "explained": board["summary"],
+              "audit": {"ablation": audit["ablation"]["status"], "missed": audit["missed"]["status"]},
+              "rules": {"fingerprint": rule_set["fingerprint"], "software": rule_set["software_version"]},
+              "live_orders_enabled": False, "status": "PARTIAL" if paper_status["status"] == "DATA_WAIT" else "SUCCESS"}
+    perf = performance.report(day, db)
+    write(output / "paper_performance.json", perf)
+    manual = {"book": "MANUAL", "status": paper_status["status"], "performance": perf["status"],
+              **({k: perf["account"][k] for k in ("equity_cents", "net_return", "max_drawdown", "marked")}
+                 if perf.get("account") else {})}
+    write(output / "books_daily.json", {"version": books.VERSION, "as_of": day, "books": books.BOOKS,
+                                        "signal": signal, "auto": auto, "manual": manual, "new100k": new100k,
+                                        "separation": "三本账各自回答一个问题，成绩不合并。"})
+    status["books"] = {"signal": {"trade_set": [r["symbol"] for r in signal["trade_set"]], "eligible": signal["eligible"],
+                                  "excluded_r3_research": signal["excluded_r3_research"],
+                                  "snapshot_id": signal["snapshot_id"], "rerun": signal.get("rerun")},
+                       "auto": {k: auto.get(k) for k in ("live", "ledger_touched", "plans", "open_positions", "fills",
+                                                         "reconciliation", "account_matches_code", "snapshot_id")}
+                               | {"placed": [(p["symbol"], p["status"]) for p in auto.get("placed", [])]},
+                       "manual": manual}
+    reviewed = {p.parent.name[:4] + "-" + p.parent.name[4:6] + "-" + p.parent.name[6:]
+                for p in (root / "results/mainwave_engine").glob("*_v1_*/reviews/*/interpretation.md")}
+    status["performance"] = {"status": perf["status"], **({k: perf["account"][k] for k in ("equity_cents", "net_return", "max_drawdown", "marked")}
+                                                         if perf.get("account") else {})}
+    status["ops"] = {"schema_version": schema["to"], "corporate_actions_pending": len(corporate_actions.pending(db)),
+                     "review_cadence": experiments.cadence(day, done=sorted(reviewed))}
+    status["run"] = {"lock": lock, "freshness": runner.freshness(day, data_root, output)["status"],
+                     "reconciliation": runner.reconcile(day, db)["status"],
+                     "pending_tasks": len(runner.pending(day, db)["tasks"])}
+    # Jev shadow: semantic judgments recorded beside the ranking; nothing downstream reads them yet.
+    jev_shadow = jev.run_shadow(snap, db) if monitor else {"status": "NOT_RUN", "rows": [], "summary": {}}
+    jev_review = jev.evaluate(day, db, data_root)
+    write(output / "jev_shadow.json", jev_shadow)
+    write(output / "jev_validation.json", jev_review)
+    (output / "jev_shadow.md").write_text(jev.render(jev_shadow, jev_review), encoding="utf-8")
+    status["jev"] = {"status": jev_shadow["status"], **{k: jev_shadow.get("summary", {}).get(k) for k in
+                                                        ("recorded", "errors", "would_review", "would_wait_late", "cost_usd")},
+                     "validation": jev_review["status"], "mature_rows": jev_review["mature_rows"]}
+    # The one deliverable: Top3/5 + per-stock steps + cross-day change + outcome comparison, stamped.
+    deliverable = brief.build(day, root)
+    write(output / "daily_brief.json", deliverable)
+    (output / "daily_brief.md").write_text(brief.render(deliverable), encoding="utf-8")
+    status["brief"] = {"screening_ability_proven": deliverable["screening_ability_proven"],
+                       "missing_inputs": deliverable["missing_inputs"],
+                       "stamps": {k: {j: v["stamp"][j] for j in ("software", "historical", "forward")}
+                                  for k, v in deliverable["sections"].items()}}
+    runner.checkpoint(day, "AFTER_CLOSE", "closure", "DONE", {"snapshot_id": snap["snapshot_id"]}, db)
+    write(output / "run_status.json", runner.status(day, db, data_root))
+    write(output / "trading_closure_status.json", status)
+    compact = [{k: r.get(k) for k in ("strength_rank", "participation_rank", "symbol", "name", "theme", "route_ids", "role", "state", "strength_score", "rank_change")}
+               for r in sorted(snap["records"], key=lambda r: r["participation_rank"])[:15]]
+    text = [f"# 机会与模拟交易闭环 {day}", "", "真实下单关闭；排名基线未校准，不代表收益概率。", "",
+            f"知识登记：{registry['summary']}；候选：{snap['summary']}。", f"人工账：{paper_status['status']}。",
+            f"信号账交易集：{[r['symbol'] for r in signal['trade_set']] or '空集'}；自动账：{auto.get('placed', []) and [(p['symbol'], p['status']) for p in auto['placed']] or '无下单'}。",
+            "", pd.DataFrame(compact).to_markdown(index=False) if compact else "无候选", "",
+            f"排序验证：{review['summary']}。", review["notice"], "", "平台入口：http://127.0.0.1:8068/trading"]
+    (output / "trading_closure.md").write_text("\n".join(text), encoding="utf-8")
+    print(f"[trading] {day} candidates={len(snap['records'])} eligible={snap['summary']['paper_plan_eligible']} paper={paper_status['status']} validation={review['summary']}", flush=True)
+    return status
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", required=True)
+    parser.add_argument("--db", type=Path, default=store.DB_PATH)
+    parser.add_argument("--no-paper", action="store_true", help="只回建研究快照，不重放模拟账户")
+    args = parser.parse_args()
+    result = run(args.date, args.db, monitor=not args.no_paper)
+    raise SystemExit(0 if result["status"] == "SUCCESS" else 1)
+
+====================================================================================================
+FILE: mainwave_engine/trading/preflight.py
+LINES: 237  SHA256[:16]: 6073b2124ea9e461  BYTES: 12708
+SOURCE: D:\AICode\Astock\mainwave_engine\trading\preflight.py
+====================================================================================================
+"""Startup self-check and data contract. Missing input is named, never counted as zero."""
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import pandas as pd
+from . import store
+
+VERSION = "preflight_contract_v1_20260920"
+# Local bars are unadjusted (adjustflag=3): volume in shares, amount in CNY, turnover in percent.
+CONTRACT = {
+    "price_basis": "RAW_UNADJUSTED", "adjust_flag": 3, "volume_unit": "SHARES",
+    "amount_unit": "CNY", "turnover_unit": "PERCENT",
+    "return_index": "pct_chg 复利收益指数用于比较；执行价格用原始价",
+    "float_shares": "NOT_DELIVERED_LOCALLY",
+}
+REQUIRED = "REQUIRED"
+OPTIONAL = "OPTIONAL"
+PACKAGE = "knowledge_package"
+REGISTER = "02_知识点覆盖与待验证.md"
+
+
+def _sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _check(cid, label, tier, ok, detail, impact="", unknown=False):
+    return {"id": cid, "label": label, "tier": tier, "detail": detail, "impact": impact,
+            "status": "UNKNOWN" if unknown else "PASS" if ok else "FAIL"}
+
+
+def manifest(root=store.ROOT):
+    """Portable source manifest; a machine-specific folder is never the delivery."""
+    root = Path(root)
+    register = root / REGISTER
+    if not register.exists():
+        return {"version": VERSION, "status": "REGISTER_MISSING", "register": REGISTER, "sources": []}
+    sources = [{"path": path.relative_to(root).as_posix(), "sha256": _sha(path),
+                "bytes": path.stat().st_size}
+               for path in sorted((root / "talk/transcripts").rglob("*.transcript.reviewed.md"))]
+    return {"version": VERSION, "status": "READY" if sources else "SOURCES_MISSING",
+            "register": REGISTER, "register_sha256": _sha(register),
+            "generated_at": store.now(), "sources": sources}
+
+
+def export_package(root=store.ROOT, dest=None):
+    """Write the manifest plus referenced files so a clean checkout can run."""
+    root = Path(root)
+    dest = Path(dest or root / "results/trading_system" / PACKAGE)
+    book = manifest(root)
+    if book["status"] != "READY":
+        raise ValueError(f"来源资料不完整，无法交付：{book['status']}")
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(root / book["register"], dest / Path(book["register"]).name)
+    for item in book["sources"]:
+        target = dest / item["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / item["path"], target)
+    (dest / "manifest.json").write_text(store.encoded(book), encoding="utf-8")
+    return {**book, "package": str(dest)}
+
+
+def import_package(source, root=store.ROOT):
+    """Install a delivered package only when every hash matches the manifest."""
+    source, root = Path(source), Path(root)
+    book = json.loads((source / "manifest.json").read_text(encoding="utf-8-sig"))
+    register = source / Path(book["register"]).name
+    if _sha(register) != book["register_sha256"]:
+        raise ValueError("登记册哈希不匹配，拒绝导入")
+    for item in book["sources"]:
+        if _sha(source / item["path"]) != item["sha256"]:
+            raise ValueError(f"来源哈希不匹配，拒绝导入：{item['path']}")
+    shutil.copyfile(register, root / book["register"])
+    for item in book["sources"]:
+        target = root / item["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / item["path"], target)
+    return {"version": VERSION, "imported": len(book["sources"]), "register": book["register"]}
+
+
+def _calendar(data_root, day):
+    path = data_root / "000300_SH_index.csv"
+    if not path.exists():
+        return None, _check("calendar", "交易日历与基准指数", REQUIRED, False,
+                            "缺少 000300_SH_index.csv", "无法判定交易日、缺日与基准超额")
+    try:
+        dates = pd.read_csv(path, usecols=["trade_date"], dtype=str).trade_date
+    except (OSError, ValueError) as exc:
+        return None, _check("calendar", "交易日历与基准指数", REQUIRED, False,
+                            f"无法读取 {path.name}：{exc}", "不能用其他日期代替目标日")
+    parsed = pd.to_datetime(dates.str.strip().str.replace("-", "", regex=False), format="%Y%m%d", errors="coerce")
+    days = sorted(set(parsed.dropna().dt.strftime("%Y-%m-%d")))
+    if day not in days:
+        return days, _check("calendar", "交易日历与基准指数", REQUIRED, False,
+                            f"{path.name} 缺少 {day}，本地最新有效日期：{days[-1] if days else '无'}",
+                            "该日不按交易日处理，不沿用前一日冒充")
+    return days, _check("calendar", "交易日历与基准指数", REQUIRED, True,
+                        f"覆盖 {days[0]}~{days[-1]}，共 {len(days)} 个交易日")
+
+
+def _contract_check(data_root, symbol, day):
+    path = data_root / f"{symbol}_daily.csv"
+    if not path.exists():
+        return _check("contract", "行情单位与复权基准", REQUIRED, False, f"缺少样本行情 {symbol}",
+                      "无法核对成交量、成交额、换手与复权基准")
+    frame = pd.read_csv(path).tail(20)
+    flags = set(pd.to_numeric(frame.adjustflag, errors="coerce").dropna().astype(int))
+    row = frame.iloc[-1]
+    amount, volume, close = float(row.amount), float(row.volume), float(row.close)
+    consistent = volume > 0 and abs(amount / (volume * close) - 1) < .2
+    turnover = pd.to_numeric(frame.turnover, errors="coerce").dropna()
+    percent = bool(len(turnover)) and float(turnover.max()) <= 100
+    ok = flags == {CONTRACT["adjust_flag"]} and consistent and percent
+    return _check("contract", "行情单位与复权基准", REQUIRED, ok,
+                  f"adjustflag={sorted(flags)}；amount≈volume×close：{consistent}；换手为百分比：{percent}",
+                  "" if ok else "单位或复权基准与契约不符，价格与成交口径需人工核对")
+
+
+def _bars(data_root, symbols, day, days):
+    """Stale, missing and mid-series gaps are reported apart; none of them is a zero."""
+    missing, stale, gapped, ready = [], [], [], 0
+    window = [d for d in (days or []) if d <= day][-20:]
+    for symbol in symbols:
+        path = data_root / f"{symbol}_daily.csv"
+        try:
+            dates = set(pd.read_csv(path, usecols=["date"]).date.astype(str).str[:10])
+        except (OSError, ValueError, KeyError):
+            missing.append(symbol)
+            continue
+        if day not in dates:
+            stale.append(symbol)
+        elif window and [d for d in window if d not in dates]:
+            gapped.append(symbol)
+        else:
+            ready += 1
+    return missing, stale, gapped, ready
+
+
+def check(day, root=store.ROOT, db=store.DB_PATH, data_root=None, sample_symbols=None):
+    root = Path(root)
+    data_root = Path(data_root or root / "data")
+    output = root / "results/mainwave_engine" / day.replace("-", "")
+    checks = []
+
+    days, calendar_check = _calendar(data_root, day)
+    checks.append(calendar_check)
+
+    universe = evidence = None
+    for name, key in (("analysis_universe.json", "universe"), ("analysis_evidence.json", "evidence")):
+        path = output / name
+        if not path.exists():
+            checks.append(_check(key, f"{name} 当日分析结果", REQUIRED, False, "文件缺失",
+                                 "无法构建候选域与证据，闭环不应继续"))
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except ValueError as exc:
+            checks.append(_check(key, f"{name} 当日分析结果", REQUIRED, False, f"解析失败：{exc}", "输入不可信"))
+            continue
+        same = payload.get("as_of") == day
+        checks.append(_check(key, f"{name} 当日分析结果", REQUIRED, same,
+                             f"as_of={payload.get('as_of')}，记录 {len(payload.get('records') or [])} 条",
+                             "" if same else "日期不匹配，不能用旧结果冒充本次成功"))
+        if key == "universe":
+            universe = payload
+        else:
+            evidence = payload
+
+    symbols = sample_symbols if sample_symbols is not None else [
+        r["symbol"] for r in (universe or {}).get("records", [])]
+    missing, stale, gapped, ready = _bars(data_root, symbols, day, days)
+    affected = len(missing) + len(stale) + len(gapped)
+    # A usable universe is required; individual halts or gaps only disqualify those symbols.
+    checks.append(_check("bars", "候选行情可用域", REQUIRED, bool(symbols) and ready > 0,
+                         f"可用 {ready}/{len(symbols)}",
+                         "" if ready else "没有任何候选具备当日行情，闭环不应继续", unknown=not symbols))
+    checks.append(_check("bars_coverage", "逐股行情完整性", OPTIONAL, not affected,
+                         f"受影响 {affected}：缺失 {len(missing)}，未更新 {len(stale)}，中间缺日 {len(gapped)}",
+                         "受影响个股按数据待核处理，不参与排名，也不记为零；"
+                         "缺日可能是停牌，也可能是抓取遗漏，不单独作为停牌证据",
+                         unknown=not symbols))
+    checks.append(_contract_check(data_root, (symbols or ["sh_600000"])[0], day))
+
+    try:
+        with store.connect(db) as conn:
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        wanted = {"snapshots", "opportunities", "opportunity_events", "registry_versions", "assessments"}
+        checks.append(_check("database", "记录库结构", REQUIRED, wanted <= tables,
+                             f"已建表 {len(tables & wanted)}/{len(wanted)}",
+                             "" if wanted <= tables else "缺表将导致连续性记录丢失"))
+    except Exception as exc:  # sqlite errors carry the actionable reason
+        checks.append(_check("database", "记录库结构", REQUIRED, False, str(exc), "无法写入连续性记录"))
+
+    book = manifest(root)
+    checks.append(_check("sources", "知识来源交付", OPTIONAL, book["status"] == "READY",
+                         f"状态 {book['status']}，来源 {len(book['sources'])} 份",
+                         "" if book["status"] == "READY" else "知识引用与规则溯源降级，其余分析可继续"))
+
+    records = (universe or {}).get("records", [])
+    themed = sum(1 for r in records if r.get("belonging_theme"))
+    checks.append(_check("themes", "题材归属覆盖", OPTIONAL, bool(records) and themed / len(records) >= .5,
+                         f"{themed}/{len(records)} 条候选有题材归属",
+                         "题材比较域收窄，同题材相对强度按不足样本处理", unknown=not records))
+
+    leader = output / "leader_state_daily.csv"
+    checks.append(_check("leaders", "日级领头线索", OPTIONAL, leader.exists(),
+                         "已生成" if leader.exists() else "缺少 leader_state_daily.csv",
+                         "角色判定退回未确认，不影响强势排名"))
+
+    required_failed = [c for c in checks if c["tier"] == REQUIRED and c["status"] != "PASS"]
+    optional_failed = [c for c in checks if c["tier"] == OPTIONAL and c["status"] != "PASS"]
+    return {"version": VERSION, "as_of": day, "contract": CONTRACT, "checks": checks,
+            "status": "BLOCKED" if required_failed else "DEGRADED" if optional_failed else "READY",
+            "blocking": [c["id"] for c in required_failed], "degraded": [c["id"] for c in optional_failed],
+            "data_wait": {"missing": missing[:50], "stale": stale[:50], "gapped": gapped[:50],
+                          "counts": {"missing": len(missing), "stale": len(stale),
+                                     "gapped": len(gapped), "ready": ready}},
+            "notice": "必要项失败应停止闭环；辅助项失败记为降级并保留原因，缺失不以0计。"}
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Check the required benchmark calendar before the daily scan.")
+    parser.add_argument("--date", required=True, help="YYYY-MM-DD")
+    day = parser.parse_args().date
+    _, calendar = _calendar(store.ROOT / "data", day)
+    print(f"[calendar_preflight] {calendar['status']} | {calendar['detail']}", flush=True)
+    if calendar["status"] != "PASS":
+        print(f"[calendar_preflight] 核对是否交易日。若是，先补指数："
+              f"python update_a_share_major_indices.py --end-date {day.replace('-', '')}", flush=True)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+====================================================================================================
+FILE: mainwave_engine/trading/books.py
+LINES: 251  SHA256[:16]: 3577fba002f4c79e  BYTES: 16303
+SOURCE: D:\AICode\Astock\mainwave_engine\trading\books.py
+====================================================================================================
+"""Three books kept apart: SIGNAL (what the ranking said), AUTO (what a frozen mechanical rule trades),
+MANUAL (what a person approved). A paper profit can only be attributed when the books never mix."""
+import json
+from pathlib import Path
+from . import store, ranking
+
+VERSION = "three_books_v1_20260921"
+BOOKS = {
+    "SIGNAL": "信号账：排序与发现的机械记录，回答发现能力有没有Alpha",
+    "AUTO": "自动策略账：按冻结机械规则模拟执行，无人工挑选，回答完整机械策略是否赚钱",
+    "MANUAL": "人工账：人在 PLAN_REVIEW 中挑选后模拟执行，回答人工判断有没有增益",
+}
+# The business definition of the trade set, frozen; a different rule is a different book version.
+AUTO_RULE = {"version": "auto_top3_participation_v1_20260921", "top_n": 3, "rank": "participation_rank",
+             "require": "paper_plan_eligible", "exclude_alpha_scope": ("R3_RESEARCH",),
+             "definition": "TradeSet_t = {原参与榜名次 <= 3 且 PLAN_REVIEW 且 非R3-only}；被排除的名次不补位"}
+ACCOUNT_KEYS = ("fee_bps", "sell_tax_bps", "single_risk_pct", "total_risk_pct", "symbol_cap_pct",
+                "theme_cap_pct", "gross_cap_pct", "max_fill_lots")
+# The auto book's account is fixed in code; once the book has started it cannot be reset.
+AUTO_ACCOUNT = dict(capital=1000000, fee_bps=3, min_fee=5, sell_tax_bps=5, single_risk_pct=1, total_risk_pct=3,
+                    symbol_cap_pct=20, theme_cap_pct=40, gross_cap_pct=80, max_fill_lots=3)
+AUTO_DB = "results/trading_system/auto_book.sqlite3"
+# The compounding book (NEW100K): same frozen trade set and entry rule as AUTO, its own ledger, 2 stock seats,
+# risk base min(equity, approved ceiling), new plans paused while drawdown from the equity peak exceeds the limit.
+# Parameters are the recommended protocol adopted 2026-09-23; changing any of them is a new protocol version.
+NEW100K_ACCOUNT = dict(capital=100000, fee_bps=3, min_fee=5, sell_tax_bps=5, single_risk_pct=1, total_risk_pct=3,
+                       symbol_cap_pct=35, theme_cap_pct=50, gross_cap_pct=90, max_fill_lots=100,
+                       capital_policy="COMPOUND_CEILING", equity_ceiling=100000, stock_seats=2)
+NEW100K_PROTOCOL = {"version": "new100k_protocol_v1_20260923", "account_id": "NEW100K_PAPER", "effective_at": "2026-09-24",
+                    "etf_seats": 1, "etf_cap_pct": 30, "drawdown_pause_pct": 10.0,
+                    "ceiling_review": "净值较上限高出 20% 且期间最大回撤未触及暂停线时，复核后上限上调至当前净值；亏损不需复核，风险基数即时随净值缩小",
+                    "note": "1000 倍目标不进入任何参数；进度落后不提高风险比例；ETF 位在有独立批准的 ETF 计划前留空"}
+NEW100K_DB = "results/trading_system/new100k_book.sqlite3"
+
+
+def _table(conn):
+    conn.execute("CREATE TABLE IF NOT EXISTS signal_book (day TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL, "
+                 "payload TEXT NOT NULL)")
+    conn.execute("CREATE TABLE IF NOT EXISTS signal_book_revisions (id TEXT PRIMARY KEY, day TEXT NOT NULL, "
+                 "snapshot_id TEXT NOT NULL, recorded_at TEXT NOT NULL, payload TEXT NOT NULL)")
+
+
+def _scope(record):
+    return record.get("alpha_scope") or ranking.alpha_scope(record.get("route_ids", ""))
+
+
+def trade_set(payload, rule=AUTO_RULE):
+    """The mechanical selection from the snapshot alone; an empty set is a valid answer, not a gap.
+
+    The rank bound applies to the original board: an excluded first place leaves two names, never three.
+    """
+    rows = [r for r in payload["records"] if r.get(rule["require"]) and r.get(rule["rank"]) is not None
+            and r[rule["rank"]] <= rule["top_n"] and _scope(r) not in rule["exclude_alpha_scope"]]
+    rows.sort(key=lambda r: (r[rule["rank"]], r["symbol"]))
+    return [{"symbol": r["symbol"], "name": r.get("name"), "opportunity_id": r["opportunity_id"],
+             "participation_rank": r.get("participation_rank"), "strength_rank": r.get("strength_rank"),
+             "strength_score": r.get("strength_score"), "route_ids": r.get("route_ids", ""),
+             "alpha_scope": _scope(r), "theme": r.get("theme")} for r in rows]
+
+
+def record_signal(day, snap, db=store.DB_PATH):
+    """SIGNAL book: the day's first publication is the frozen one and is what every reader gets back.
+
+    A rerun with a different snapshot is kept as a revision beside it, never in its place, so the
+    signal book, the daily report and the auto book cannot drift apart on the same day.
+    """
+    eligible = [r for r in snap["records"] if r.get("paper_plan_eligible")]
+    entry = {"version": VERSION, "book": "SIGNAL", "day": day, "snapshot_id": snap["snapshot_id"], "rule": AUTO_RULE,
+             "basis": snap.get("observation_basis"), "trade_set": trade_set(snap),
+             "eligible": len(eligible),
+             "excluded_r3_research": sum(1 for r in eligible if _scope(r) == "R3_RESEARCH")}
+    with store.connect(db) as conn:
+        _table(conn)
+        row = conn.execute("SELECT payload FROM signal_book WHERE day=?", (day,)).fetchone()
+        if not row:
+            conn.execute("INSERT INTO signal_book VALUES (?,?,?)", (day, snap["snapshot_id"], store.encoded(entry)))
+            return {**entry, "rerun": None}
+        frozen = json.loads(row[0])
+        same = frozen["snapshot_id"] == entry["snapshot_id"] and frozen["trade_set"] == entry["trade_set"]
+        if not same:
+            conn.execute("INSERT OR IGNORE INTO signal_book_revisions VALUES (?,?,?,?,?)",
+                         (f"{day}:{entry['snapshot_id']}", day, entry["snapshot_id"], store.now(), store.encoded(entry)))
+    return {**frozen, "rerun": {"status": "SAME_AS_FROZEN" if same else "DIFFERENT_SNAPSHOT_KEPT_AS_REVISION",
+                                "snapshot_id": entry["snapshot_id"],
+                                "trade_set": [r["symbol"] for r in entry["trade_set"]],
+                                "note": "首发记录冻结；重跑结果另存修订，执行与验证都以首发为准"}}
+
+
+def signal_history(db=store.DB_PATH):
+    with store.connect(db) as conn:
+        _table(conn)
+        return [json.loads(r[0]) for r in conn.execute("SELECT payload FROM signal_book ORDER BY day")]
+
+
+def _ledger_evidence(conn, expected=None):
+    """What the ledger actually did, read back from it: effective config, orders vs fills, add refusals."""
+    expected = {k: v for k, v in (expected or AUTO_ACCOUNT).items() if k in ("capital", "min_fee", *ACCOUNT_KEYS)}
+    from collections import Counter
+    row = conn.execute("SELECT initial_cents, config FROM paper_account").fetchone()
+    cfg = json.loads(row["config"])
+    effective = {"capital": row["initial_cents"] / 100, "min_fee": cfg["min_fee_cents"] / 100,
+                 **{k: cfg[k] for k in ACCOUNT_KEYS}}
+    matches = all(float(effective[k]) == float(expected[k]) for k in expected)
+    orders = [{"symbol": json.loads(o["plan"])["symbol"], "order_id": o["id"], "ordered": o["quantity"],
+               "filled": o["filled"], "status": o["status"]}
+              for o in conn.execute("SELECT o.*, p.payload AS plan FROM paper_orders o JOIN paper_plans p ON p.id=o.plan_id "
+                                    "WHERE o.side='BUY' ORDER BY o.created_at")]
+    cancelled = {json.loads(r[0])["order_id"]: json.loads(r[0])["reason"]
+                 for r in conn.execute("SELECT payload FROM paper_events WHERE kind='ORDER_CANCELLED'")}
+    for o in orders:
+        o["unfilled_reason"] = cancelled.get(o["order_id"], "")
+    add_refusals = Counter(json.loads(r[0]).get("reason", "") for r in conn.execute(
+        "SELECT payload FROM paper_events WHERE kind='ADD_REJECTED'"))
+    counts = {"plans": conn.execute("SELECT COUNT(*) FROM paper_plans").fetchone()[0],
+              "fills": conn.execute("SELECT COUNT(*) FROM paper_fills").fetchone()[0],
+              "open_positions": conn.execute("SELECT COUNT(DISTINCT plan_id) FROM paper_lots WHERE remaining>0").fetchone()[0]}
+    return {"effective_account": effective, "account_matches_code": matches,
+            "config_fingerprint": store.digest([effective, AUTO_RULE]),
+            "executions": orders, "add_refusals": dict(add_refusals), **counts}
+
+
+def _ensure_snapshot(auto_db, main_db, snapshot_id):
+    """The frozen signal's snapshot must be on the auto ledger; a crashed first run may have left it out."""
+    with store.connect(auto_db) as conn:
+        if conn.execute("SELECT 1 FROM snapshots WHERE id=?", (snapshot_id,)).fetchone():
+            return
+    with store.connect(main_db) as conn:
+        stored = store.snapshot(conn, snapshot_id)
+    original = {k: v for k, v in stored.items() if k not in ("snapshot_id", "recorded_at")}
+    store.persist(original, auto_db)
+
+
+def run_auto(day, payload, snap, root=store.ROOT, data_root=None, at=None, live=True, signal=None, main_db=None):
+    """AUTO book: existing positions first (fills, exits, adds), then the frozen trade set; no human input.
+
+    Only a same-day after-close run touches the ledger. A reconstruction reads the ledger and records what
+    the rule would have chosen; it matches nothing, values nothing and places nothing.
+    """
+    from . import paper, daily, migrations, performance, runner
+    root = Path(root)
+    db = root / AUTO_DB
+    migrations.upgrade(db)
+    with paper.database(db) as conn:
+        configured = conn.execute("SELECT 1 FROM paper_account").fetchone() is not None
+    if not configured:
+        paper.initialize(AUTO_ACCOUNT, db, at=at)
+    # The day's first publication decides; a same-day rerun executes the frozen set, not its own.
+    frozen = signal or {"snapshot_id": snap["snapshot_id"], "trade_set": trade_set(snap)}
+    chosen = frozen["trade_set"]
+    base = {"version": VERSION, "book": "AUTO", "day": day, "db": str(db), "rule": AUTO_RULE, "live": live,
+            "account": AUTO_ACCOUNT, "snapshot_id": frozen["snapshot_id"],
+            "signal_source": "FROZEN_SIGNAL_BOOK" if signal else "SNAPSHOT",
+            "note": "自动账与人工账各自独立数据库；两账成绩不合并、不互相抵扣。"}
+    if not live:
+        with paper.database(db) as conn:
+            evidence = _ledger_evidence(conn)
+        return {**base, "ledger_touched": False,
+                "monitor": {"status": "SKIPPED_NOT_LIVE", "issues": []},
+                "placed": [{**row, "status": "NOT_LIVE_DAY_NO_ORDER", "detail": "非当日收盘后运行：不撮合、不估值、不下单"}
+                           for row in chosen],
+                **evidence, "performance": {"status": "NOT_EVALUATED_NOT_LIVE"},
+                "reconciliation": runner.reconcile(day, db)["status"]}
+    if frozen["snapshot_id"] == snap["snapshot_id"]:
+        # Same payload, same snapshot id: the auto book judges exactly what the main ledger recorded.
+        store.persist(payload, db)
+    elif main_db is not None:
+        _ensure_snapshot(db, main_db, frozen["snapshot_id"])
+    # The approval clock is read after the snapshot is on record; an earlier clock reads as a stale snapshot.
+    at = at or store.now()
+    monitor = daily.monitor_paper(day, db, data_root)
+    placed = []
+    for row in chosen:
+        try:
+            result = paper.submit(frozen["snapshot_id"], row["symbol"], db, at=at, book="AUTO")
+            placed.append({**row, "status": "ORDER_APPROVED" if result.get("created") else "NOT_CREATED",
+                           "detail": result.get("reason", "") or result.get("order_id", "")})
+        except (paper.Conflict, ValueError) as exc:
+            placed.append({**row, "status": "REFUSED", "detail": str(exc)})
+    with paper.database(db) as conn:
+        evidence = _ledger_evidence(conn)
+    perf = performance.report(day, db)
+    return {**base, "ledger_touched": True,
+            "monitor": {"status": monitor["status"], "issues": monitor.get("issues", [])},
+            "placed": placed, **evidence,
+            "performance": {"status": perf["status"],
+                            **({k: perf["account"][k] for k in ("equity_cents", "net_return", "max_drawdown", "marked")}
+                               if perf.get("account") else {})},
+            "reconciliation": runner.reconcile(day, db)["status"]}
+
+
+def current_drawdown(perf):
+    """Drawdown of the last marked equity from its running peak, in percent; None while nothing is marked."""
+    marked = [p["equity_cents"] for p in (perf or {}).get("nav") or [] if p.get("equity_cents")]
+    if not marked:
+        return None
+    return round((1 - marked[-1] / max(marked)) * 100, 3)
+
+
+def run_new100k(day, payload, snap, root=store.ROOT, data_root=None, at=None, live=True, signal=None, main_db=None):
+    """NEW100K book: the frozen trade set (same as AUTO) under the compounding protocol. Only same-day live runs
+    place orders; before the effective date, on a reconstruction, or past the drawdown pause, nothing is placed."""
+    from . import paper, daily, migrations, performance, runner
+    root = Path(root)
+    db = root / NEW100K_DB
+    frozen = signal or {"snapshot_id": snap["snapshot_id"], "trade_set": trade_set(snap)}
+    chosen = frozen["trade_set"]
+    base = {"version": VERSION, "book": "NEW100K", "day": day, "db": str(db), "protocol": NEW100K_PROTOCOL,
+            "account": NEW100K_ACCOUNT, "snapshot_id": frozen["snapshot_id"], "live": live,
+            "note": "复利账：与旧 100 万自动账、人工账各自独立；成绩不合并"}
+    if day < NEW100K_PROTOCOL["effective_at"]:
+        return {**base, "status": "NOT_YET_EFFECTIVE", "ledger_touched": False,
+                "placed": [{**row, "status": "NOT_YET_EFFECTIVE"} for row in chosen]}
+    migrations.upgrade(db)
+    with paper.database(db) as conn:
+        configured = conn.execute("SELECT 1 FROM paper_account").fetchone() is not None
+    if not configured:
+        paper.initialize(NEW100K_ACCOUNT, db, at=at)
+    if not live:
+        with paper.database(db) as conn:
+            evidence = _ledger_evidence(conn, NEW100K_ACCOUNT)
+        return {**base, "status": "NOT_LIVE", "ledger_touched": False,
+                "placed": [{**row, "status": "NOT_LIVE_DAY_NO_ORDER"} for row in chosen], **evidence}
+    if frozen["snapshot_id"] == snap["snapshot_id"]:
+        store.persist(payload, db)
+    elif main_db is not None:
+        _ensure_snapshot(db, main_db, frozen["snapshot_id"])
+    at = at or store.now()
+    monitor = daily.monitor_paper(day, db, data_root)
+    drawdown = current_drawdown(performance.report(day, db))
+    paused = drawdown is not None and drawdown >= NEW100K_PROTOCOL["drawdown_pause_pct"]
+    placed = []
+    for row in chosen:
+        if paused:
+            placed.append({**row, "status": "DRAWDOWN_PAUSE",
+                           "detail": f"净值回撤 {drawdown}% 达到 {NEW100K_PROTOCOL['drawdown_pause_pct']}%：暂停新开仓，待复核"})
+            continue
+        try:
+            result = paper.submit(frozen["snapshot_id"], row["symbol"], db, at=at, book="NEW100K")
+            placed.append({**row, "status": "ORDER_APPROVED" if result.get("created") else "NOT_CREATED",
+                           "detail": result.get("reason", "") or result.get("order_id", "")})
+        except (paper.Conflict, ValueError) as exc:
+            placed.append({**row, "status": "REFUSED", "detail": str(exc)})
+    with paper.database(db) as conn:
+        evidence = _ledger_evidence(conn, NEW100K_ACCOUNT)
+    perf = performance.report(day, db)
+    return {**base, "status": "LIVE", "ledger_touched": True, "drawdown_pct": current_drawdown(perf), "paused": paused,
+            "monitor": {"status": monitor["status"], "issues": monitor.get("issues", [])}, "placed": placed, **evidence,
+            "performance": {"status": perf["status"],
+                            **({k: perf["account"][k] for k in ("equity_cents", "net_return", "max_drawdown", "marked")}
+                               if perf.get("account") else {})},
+            "reconciliation": runner.reconcile(day, db)["status"]}
+
+====================================================================================================
+FILE: mainwave_engine/trading/position_monitor.py
+LINES: 451  SHA256[:16]: 452da734b64955c6  BYTES: 31273
+SOURCE: D:\AICode\Astock\mainwave_engine\trading\position_monitor.py
+====================================================================================================
+"""Position monitor, independent of candidate generation (strong_trend_core_v1 §04, S06/S13).
+
+Runs on the ledgers and local daily bars only: a failed scan, AI timeout or news error never stops it.
+It is a read-only projection. Exits are still queued by each book's frozen exit policy in the after-close
+closure (single writer per ledger); this module states what that contract requires, flags what the
+closure has not yet processed, and never writes quantities or cash.
+
+Five orthogonal states per position (trade / trend / data / execution / profit) plus one action, in the
+design's priority order. Missing data is never reported as normal.
+"""
+import argparse
+import json
+from pathlib import Path
+
+import pandas as pd
+
+from . import etf_dip, paper, profit_tracker, ranking, store
+
+VERSION = "position_monitor_v1_20260923"
+OUT = store.ROOT / "results/trading_system/position_monitor"
+EXIT_OPEN = ("OPEN", "PARTIAL", "EXIT_BLOCKED", "UNKNOWN")
+ACTION_WORDS = {"EXIT_REQUIRED": "必须退出", "REDUCE_REQUIRED": "按原合同减仓", "MANUAL_REVIEW": "人工核查",
+                "HOLD_REVIEW": "持有并复核", "HOLD": "按原合同持有", "ADD_CANDIDATE": "加仓候选"}
+MARKET_INDEX = "000852_SH"  # CSI 1000
+MARKET_RULE = "趋势清仓 G1：中证1000 收盘 < MA20 且 MA20 低于 5 个交易日前（大跌预警与分级减仓_20260924.md）"
+REBOUND_RULE = ("大跌反弹篮子 P2：中证1000 距 60 日最高收盘 −15%/−20%/−25% 各投 1/3，买当日距自身 60 日高跌幅最大的 1/5，"
+                "取约 20 只等权，次日收盘买入，每档持有 20 个交易日，不设个股止损；与趋势持仓分账（大跌后抄底研究_20260925.md）")
+WARNING_INDEX = {"000300_SH": "沪深300", "000905_SH": "中证500", "000852_SH": "中证1000", "399006_SZ": "创业板指"}
+WARNING_WINDOW = 6
+WARNING_RULE = ("短期回调预警（research/index_warning_signals.py，2024 至今与 2016-2023 两段一致）：指数 MA20 刚拐头向下"
+                "（低于 5 日前）的前 6 个交易日，之后 10-20 日平均偏弱；MA20 下行已超过 6 天的不再预警（历史上随后多为反弹）。"
+                "预警约一半是误报，只提示，不是卖出信号。MA60 斜率转负不作预警（出现时下跌多已发生）。")
+REBOUND_LEVELS = (-0.15, -0.20, -0.25)
+REBOUND_WINDOW = 60  # sessions after a leg's first -15% day in which the deeper tranches may still fill
+TREND_FROM_VALUATION = {"HOLD": "INTACT", "EXIT_REQUIRED": "BROKEN", "REDUCE_REQUIRED": "DEGRADED",
+                        "RULES_REVIEW_HOLD": "UNKNOWN", "DATA_WAIT": "UNKNOWN"}
+
+
+def books():
+    from . import books as B
+    return {"MANUAL": store.DB_PATH, "AUTO": store.ROOT / B.AUTO_DB, "NEW100K": store.ROOT / B.NEW100K_DB}
+
+
+def bar_state(symbol, day, data_root):
+    path = Path(data_root) / f"{symbol}_daily.csv"
+    if not path.exists():
+        return {"data_state": "MISSING", "reason": "本地无日线文件"}
+    try:
+        f = ranking.prices(path, day)
+    except (OSError, ValueError, KeyError) as exc:
+        return {"data_state": "MISSING", "reason": f"日线读取失败：{exc}"[:120]}
+    if f.empty:
+        return {"data_state": "MISSING", "reason": "无截至当日的日线"}
+    r = f.iloc[-1]
+    if r["date"] != day:
+        return {"data_state": "STALE", "last_day": r["date"], "close": float(r["close"]), "reason": f"最新日线为 {r['date']}"}
+    return {"data_state": "FRESH", "last_day": day, "close": float(r["close"]), "low": float(r["low"]),
+            "suspended": ranking.number(r.get("tradestatus")) == 0}
+
+
+def _index_frame(day, data_root):
+    f = pd.read_csv(Path(data_root) / f"{MARKET_INDEX}_index.csv")
+    f["date"] = pd.to_datetime(f["trade_date"].astype(str)).dt.strftime("%Y-%m-%d")
+    return f[f["date"] <= day].drop_duplicates("date").sort_values("date").reset_index(drop=True)
+
+
+def market_risk(day, data_root):
+    """Market trend-exit alert. Report only: it never changes a position's action, an order or a quantity."""
+    base = {"index": "中证1000", "rule": MARKET_RULE, "report_only": True}
+    try:
+        f = _index_frame(day, data_root)
+    except (OSError, ValueError, KeyError) as exc:
+        return {**base, "level": "UNKNOWN", "text": f"中证1000 日线不可用（{str(exc)[:80]}），大盘风险未知，不按正常处理"}
+    if len(f) < 25:
+        return {**base, "level": "UNKNOWN", "text": "中证1000 历史不足 25 个交易日，大盘风险未知"}
+    c = f["close"].astype(float).reset_index(drop=True)
+    ma20 = c.rolling(20).mean()
+    close, m, m5 = float(c.iloc[-1]), float(ma20.iloc[-1]), float(ma20.iloc[-6])
+    facts = {"as_of": f["date"].iloc[-1], "close": round(close, 2), "ma20": round(m, 2), "ma20_5d_ago": round(m5, 2),
+             "close_vs_ma20": round(close / m - 1, 4), "drawdown_20d": round(close / float(c.iloc[-20:].max()) - 1, 4)}
+    below, turning = close < m, m < m5
+    # tomorrow's MA20 if the index merely closes flat, against the level it will then be compared with
+    flat_tomorrow = (float(c.iloc[-19:].sum()) + close) / 20
+    m4 = float(ma20.iloc[-5])
+    facts["ma20_if_flat_tomorrow"] = round(flat_tomorrow, 2)
+    if facts["as_of"] != day:
+        return {**base, **facts, "level": "STALE", "text": f"中证1000 最新日线为 {facts['as_of']}，今日大盘风险未确认，不按正常处理"}
+    if below and turning:
+        return {**base, **facts, "level": "TREND_EXIT",
+                "text": f"大盘趋势破坏：中证1000 收盘 {close:.2f} 低于 MA20 {m:.2f}，且 MA20 在下拐（5 日前 {m5:.2f}）。"
+                        "按趋势清仓规则应清仓、停止新买（仅提示，不自动卖出）。解除：收盘回到 MA20 上方或 MA20 不再下拐。"}
+    if below and flat_tomorrow < m4:
+        return {**base, **facts, "level": "CRITICAL",
+                "text": f"大盘趋势临界：中证1000 收盘 {close:.2f} 低于 MA20 {m:.2f}，明日平收 MA20 即下拐（临界 {flat_tomorrow:.2f} 对 {m4:.2f}），"
+                        "趋势清仓一步之遥。不建议新开仓（仅提示）。解除：收盘回到 MA20 上方。"}
+    state = "收盘在 MA20 下方，MA20 尚未下拐" if below else "MA20 在下拐，收盘仍在 MA20 上方" if turning else "收盘在 MA20 上方，MA20 未下拐"
+    return {**base, **facts, "level": "NORMAL", "text": f"大盘趋势未破坏：{state}（收盘 {close:.2f}，MA20 {m:.2f}）"}
+
+
+def beaten_basket(day, data_root, pick=20):
+    """Most beaten fifth of non-ST A-shares by close vs own 60-session high (compounded pct_chg), largest amount first."""
+    rows = []
+    for path in sorted(Path(data_root).glob("s[hz]_*_daily.csv")):
+        if path.name[:5] not in ("sh_60", "sz_00", "sz_30", "sh_68"):
+            continue
+        try:
+            f = pd.read_csv(path, usecols=["date", "pct_chg", "tradestatus", "isST", "amount"])
+        except (OSError, ValueError):
+            continue
+        f["date"] = f["date"].astype(str).str[:10]
+        f = f[(f["date"] <= day) & (f["tradestatus"] == 1) & f["pct_chg"].notna()].drop_duplicates("date").tail(60)
+        if len(f) < 40 or f["date"].iloc[-1] != day or ranking.number(f["isST"].iloc[-1]) == 1:
+            continue
+        c = (1 + f["pct_chg"] / 100).cumprod()
+        rows.append({"symbol": path.name[:9], "dd60": float(c.iloc[-1] / c.max() - 1), "amount": float(f["amount"].iloc[-1] or 0)})
+    if not rows:
+        return {"universe": 0, "q1_size": 0, "picks": [], "pick_rule": "无可用个股日线"}
+    x = pd.DataFrame(rows)
+    q1 = x[x["dd60"] <= x["dd60"].quantile(0.2)].sort_values("amount", ascending=False)
+    from .. import strong_trend
+    names = strong_trend.names(store.ROOT)
+    return {"universe": len(x), "q1_size": len(q1), "q1_dd60_max": round(float(q1["dd60"].max()), 4),
+            "pick_rule": "Q1 内按当日成交额取前 20（随机 20 只已验证接近整篮；按成交额挑选未验证）",
+            "picks": [{"symbol": r.symbol, "name": names.get(r.symbol, ""), "dd60": round(r.dd60, 4), "amount_yi": round(r.amount / 1e8, 2)}
+                      for r in q1.head(pick).itertuples()]}
+
+
+def market_warning(day, data_root):
+    """Early pullback warning on four broad indices. Report only: never changes a position, a plan or an order."""
+    rows = []
+    for code, name in WARNING_INDEX.items():
+        try:
+            f = pd.read_csv(Path(data_root) / f"{code}_index.csv")
+        except (OSError, ValueError):
+            rows.append({"index": name, "level": "UNKNOWN", "text": "本地无日线"})
+            continue
+        f["date"] = pd.to_datetime(f["trade_date"].astype(str)).dt.strftime("%Y-%m-%d")
+        f = f[f["date"] <= day].drop_duplicates("date").sort_values("date").reset_index(drop=True)
+        if len(f) < 66 or f["date"].iloc[-1] != day:
+            rows.append({"index": name, "level": "STALE", "text": f"最新日线 {f['date'].iloc[-1] if len(f) else '无'}，今日未确认"})
+            continue
+        c = f["close"].astype(float)
+        ma20, ma60 = c.rolling(20).mean(), c.rolling(60).mean()
+        k = len(f) - 1
+        while k > 5 and ma20.iloc[k] < ma20.iloc[k - 5]:
+            k -= 1
+        age = len(f) - 1 - k                   # sessions MA20 has been below its level 5 sessions earlier
+        since = f["date"].iloc[k + 1] if age else ""
+        below60 = "，且收盘已在 MA60 下" if c.iloc[-1] < ma60.iloc[-1] else ""
+        level = "WARNING" if 0 < age <= WARNING_WINDOW else "NORMAL"
+        text = (f"MA20 自 {since} 拐头向下（第 {age} 天）{below60}：短期回调风险，不追高、新仓谨慎" if level == "WARNING"
+                else f"MA20 已下行 {age} 天，预警期已过" if age else "MA20 未下行")
+        rows.append({"index": name, "level": level, "close": round(float(c.iloc[-1]), 2), "ma20": round(float(ma20.iloc[-1]), 2),
+                     "ma60": round(float(ma60.iloc[-1]), 2), "ma20_falling_since": since, "ma20_falling_days": age, "text": text})
+    known = [r["level"] for r in rows if r["level"] in ("WARNING", "NORMAL")]
+    level = "WARNING" if "WARNING" in known else "NORMAL" if known else "UNKNOWN"
+    return {"rule": WARNING_RULE, "report_only": True, "level": level, "indices": rows}
+
+
+def rebound_basket(day, data_root):
+    """Crash rebound basket (P2). Report only: it never creates a plan, an order or a quantity."""
+    base = {"index": "中证1000", "rule": REBOUND_RULE, "report_only": True}
+    try:
+        f = _index_frame(day, data_root)
+    except (OSError, ValueError, KeyError) as exc:
+        return {**base, "level": "UNKNOWN", "text": f"中证1000 日线不可用（{str(exc)[:80]}），反弹篮子状态未知"}
+    if len(f) < 60:
+        return {**base, "level": "UNKNOWN", "text": "中证1000 历史不足 60 个交易日，反弹篮子状态未知"}
+    c = f["close"].astype(float)
+    dd = (c / c.rolling(60).max() - 1).to_numpy()
+    dates, n = f["date"].tolist(), len(f)
+    facts = {"as_of": dates[-1], "close": round(float(c.iloc[-1]), 2), "drawdown_60d": round(float(dd[-1]), 4)}
+    if dates[-1] != day:
+        return {**base, **facts, "level": "STALE", "text": f"中证1000 最新日线为 {dates[-1]}，今日反弹篮子状态未确认"}
+    hit = dd <= REBOUND_LEVELS[0]
+    # a leg starts on a -15% day with no -15% day in the 60 sessions before it
+    starts = [k for k in range(n) if hit[k] and not hit[max(0, k - REBOUND_WINDOW):k].any()]
+    start = starts[-1] if starts and n - 1 - starts[-1] < REBOUND_WINDOW else None
+    if start is None:
+        return {**base, **facts, "level": "INACTIVE",
+                "text": f"大跌反弹篮子未触发：中证1000 距 60 日最高收盘 {dd[-1]:.1%}（第一档在 −15%）"}
+    tranches = []
+    for i, lvl in enumerate(REBOUND_LEVELS, 1):
+        k = next((k for k in range(start, n) if dd[k] <= lvl), None)
+        hold_end = None if k is None else dates[k + 21] if k + 21 < n else "买入后第 20 个交易日"
+        tranches.append({"tranche": i, "level": lvl, "signal_day": dates[k] if k is not None else None, "hold_until": hold_end})
+    today = [t for t in tranches if t["signal_day"] == day]
+    done = "；".join(f"第{t['tranche']}档({t['level']:.0%}) " + (f"{t['signal_day']} 触发，持有至 {t['hold_until']}" if t["signal_day"] else "未到")
+                    for t in tranches)
+    window = f"本轮起点 {dates[start]}，再过 {REBOUND_WINDOW - (n - 1 - start)} 个交易日未到的档位作废"
+    out = {**base, **facts, "leg_start": dates[start], "tranches": tranches}
+    if today:
+        t = today[-1]
+        return {**out, "level": "TRIGGERED_TODAY", "basket": beaten_basket(day, data_root),
+                "text": f"大跌反弹篮子第 {t['tranche']} 档今日触发：中证1000 距 60 日高 {dd[-1]:.1%}。"
+                        f"明日收盘买入 1/3，持有 20 个交易日（仅提示，不下单）。{done}。{window}。"}
+    return {**out, "level": "ACTIVE", "text": f"大跌反弹篮子进行中：距 60 日高 {dd[-1]:.1%}。{done}。{window}。"}
+
+
+def _valuations(conn, pid, day):
+    rows = [(r["as_of"], json.loads(r["payload"])) for r in conn.execute(
+        "SELECT as_of, payload FROM paper_valuations WHERE plan_id=? AND as_of<=? ORDER BY as_of, rowid", (pid, day))]
+    today = next((v for d, v in reversed(rows) if d == day), None)
+    before = next((v for d, v in reversed(rows) if d < day), None)
+    return today, before
+
+
+def assess(conn, plan, day, cfg, data_root):
+    from . import corporate_actions
+    pid = plan["id"]
+    lots = [dict(r) for r in conn.execute("SELECT * FROM paper_lots WHERE plan_id=? ORDER BY entry_day, id", (pid,))]
+    held = sum(l["remaining"] for l in lots)
+    if not held:
+        return None
+    today, before = _valuations(conn, pid, day)
+    bar = bar_state(plan["symbol"], day, data_root)
+    if corporate_actions.pending_for(conn, pid):
+        bar = {**bar, "data_state": "CORPORATE_ACTION_PENDING", "reason": "公司行动待确认；股数/价格/保护线未对齐前不做风险授权"}
+    # Protection already in force today comes from an earlier close; today's close only sets the next one.
+    effective = profit_tracker.protection_of(plan, before or {})
+    upcoming = profit_tracker.protection_of(plan, today) if today and today.get("status") != "DATA_WAIT" else None
+    hard = plan.get("stop_cents")
+    exits = [dict(r) for r in conn.execute(
+        "SELECT * FROM paper_orders WHERE plan_id=? AND side='SELL' AND status IN ('OPEN','PARTIAL','EXIT_BLOCKED','UNKNOWN')", (pid,))]
+    pending_exit = sum(o["quantity"] - o["filled"] for o in exits)
+    sellable = sum(l["remaining"] for l in lots if l["entry_day"] < day)
+    statuses = {o["status"] for o in exits}
+    trade_state = ("EXIT_BLOCKED" if statuses & {"EXIT_BLOCKED", "UNKNOWN"} else "EXIT_PARTIAL" if "PARTIAL" in statuses
+                   else "EXIT_PENDING" if exits else "OPEN")
+    # Trend: the closure's frozen exit policy is authoritative; the monitor only adds the protection checks.
+    trend, trend_basis = "UNKNOWN", "今日收盘闭环尚未对此持仓估值"
+    if today:
+        trend = TREND_FROM_VALUATION.get(today.get("status"), "UNKNOWN")
+        trend_basis = f"收盘闭环（{today.get('policy_version') or plan.get('exit_version')}）：{today.get('status')} {today.get('reason') or ''}".strip()
+    breach = None
+    if bar["data_state"] == "FRESH":
+        if hard and round(bar["low"] * 100) <= hard:
+            breach = f"日内最低 {bar['low']:.2f} 触及初始硬止损 {hard / 100:.2f}"
+        elif effective and round(bar["close"] * 100) < effective:
+            breach = f"收盘 {bar['close']:.2f} 跌破此前已生效保护 {effective / 100:.2f}"
+        if breach:
+            trend, trend_basis = "BROKEN", breach + ("（收盘闭环未处理，待闭环按冻结合同登记退出）" if not today else "")
+        elif not today:
+            trend, trend_basis = "INTACT", "仅核对了已生效保护线与硬止损；冻结退出合同的完整判断待收盘闭环"
+    mark = None
+    if bar["data_state"] == "FRESH":
+        mark = (round(bar["close"] * 100), day, "MONITOR_DAILY_CLOSE")
+    c = profit_tracker.campaign(conn, plan, day, cfg, upcoming or effective, mark_override=mark)
+    ratio = c.get("giveback_ratio")
+    pnl = c.get("net_pnl_cents")
+    profit_state = ("UNKNOWN" if pnl is None else
+                    "GIVEBACK_FROM_PEAK" if c.get("giveback_alert") else
+                    "NEW_PEAK" if c["observed_peak_cents"] and pnl >= c["observed_peak_cents"] else
+                    "NEAR_BREAKEVEN" if abs(pnl) <= (c.get("estimated_exit_cost_cents") or 0) else
+                    "NET_PROFIT" if pnl > 0 else "NET_LOSS")
+    # Action priority (design §04.4): hard risk / pending exit > trend exit > reduce > data > review > hold.
+    blocks = []
+    if trade_state != "OPEN":
+        action = "EXIT_REQUIRED"
+        reason = "已有退出委托未完成" + ("，当前受阻，敞口仍计入风险" if trade_state == "EXIT_BLOCKED" else "")
+    elif trend == "BROKEN":
+        action, reason = "EXIT_REQUIRED", trend_basis
+    elif today and today.get("status") == "REDUCE_REQUIRED":
+        action, reason = "REDUCE_REQUIRED", f"原退出合同要求减仓：{today.get('reason')}"
+    elif bar["data_state"] != "FRESH":
+        action, reason = "MANUAL_REVIEW", f"数据状态 {bar['data_state']}：{bar.get('reason', '')}；保留最后可信值，停止依赖它的新风险授权"
+    elif trend in ("DEGRADED", "UNKNOWN") or c.get("giveback_alert"):
+        action = "HOLD_REVIEW"
+        reason = "；".join(x for x in (trend_basis if trend != "INTACT" else "",
+                                       f"利润回吐 {ratio:.0%}（仅告警，不自动卖出）" if c.get("giveback_alert") else "") if x)
+    else:
+        action, reason = "HOLD", "原交易依据未被价格证伪，按原合同持有"
+    if action in ("EXIT_REQUIRED", "REDUCE_REQUIRED"):
+        blocks.append("存在退出/减仓要求")
+    if bar["data_state"] != "FRESH":
+        blocks.append("数据未就绪")
+    if trend != "INTACT":
+        blocks.append(f"趋势状态 {trend}")
+    if bar.get("suspended"):
+        blocks.append("停牌")
+    next_event = ("下一可交易开盘按退出委托撮合；跌停/停牌则记为退出受阻并继续跟踪" if action == "EXIT_REQUIRED" else
+                  f"收盘跌破 {(upcoming or effective or 0) / 100:.2f} 即触发退出" if (upcoming or effective) else "等待保护线建立")
+    return {"campaign_id": pid, "symbol": plan["symbol"], "name": plan.get("name"), "theme": plan.get("theme"),
+            "trade_state": trade_state, "trend_state": trend, "data_state": bar["data_state"],
+            "execution_state": {"held": held, "sellable": sellable, "t_plus_1_locked": held - sellable,
+                                "pending_exit_qty": pending_exit, "suspended": bool(bar.get("suspended")),
+                                "exit_orders": [{"id": o["id"], "status": o["status"], "left": o["quantity"] - o["filled"]} for o in exits]},
+            "profit_state": profit_state, "action": action, "action_word": ACTION_WORDS[action], "action_reason": reason,
+            "add_blocked_by": blocks,
+            "six_questions": {
+                "why_bought": {"entry_day": c["entry_day"], "mode": plan.get("mode"), "setup": plan.get("setup_kind"),
+                               "routes": plan.get("route_ids"), "still_valid": trend_basis},
+                "holding": {"held": held, "sellable": sellable, "locked_t1": held - sellable},
+                "protection": {"initial_hard_cents": hard, "effective_today_cents": effective,
+                               "next_session_cents": upcoming,
+                               "next_effective": "下一交易日" if upcoming else None},
+                "risk": {k: c.get(k) for k in ("net_pnl_if_exit_at_protection_cents", "net_pnl_if_stress_exit_cents",
+                                               "current_wealth_loss_in_stress_cents", "principal_loss_in_stress_cents",
+                                               "stress_basis")},
+                "add": "禁止：" + "、".join(blocks) if blocks else "未被禁止；是否加仓只由该计划冻结的加仓合同在收盘闭环评估",
+                "action": {"action": action, "next_event": next_event}},
+            "profit": c, "bar": bar}
+
+
+def run(day, data_root=None, ledgers=None):
+    day = pd.Timestamp(day).date().isoformat()
+    data_root = Path(data_root or store.ROOT / "data")
+    result = {"version": VERSION, "as_of": day, "computed_at": store.now(), "live_orders_enabled": False,
+              "notice": "独立持仓监控：只读账本与本地日线，不依赖当日选股流水线；不写数量与现金。" + profit_tracker.NOTICE,
+              "market_risk": market_risk(day, data_root), "market_warning": market_warning(day, data_root),
+              "rebound_basket": rebound_basket(day, data_root), "etf_dip": etf_dip.alert(day, data_root),
+              "books": {}, "alerts": []}
+    for book, db in (ledgers or books()).items():
+        if not Path(db).exists():
+            result["books"][book] = {"status": "NO_LEDGER"}
+            continue
+        try:
+            with paper.database(db) as conn:
+                raw = conn.execute("SELECT * FROM paper_account").fetchone()
+                if not raw:
+                    result["books"][book] = {"status": "UNCONFIGURED"}
+                    continue
+                cfg = json.loads(raw["config"])
+                plans = [json.loads(r[0]) for r in conn.execute("SELECT payload FROM paper_plans ORDER BY created_at")]
+                positions = [p for p in (assess(conn, plan, day, cfg, data_root) for plan in plans) if p]
+                pending_buys = [{"order_id": o["id"], "symbol": json.loads(o["plan"])["symbol"], "status": o["status"],
+                                 "quantity": o["quantity"] - o["filled"], "reserve_cents": o["reserve_cents"]}
+                                for o in conn.execute("SELECT o.*, p.payload AS plan FROM paper_orders o JOIN paper_plans p ON p.id=o.plan_id "
+                                                      "WHERE o.side='BUY' AND o.status IN ('OPEN','PARTIAL','UNKNOWN')")]
+            ledger = paper.view(db)
+            profits = profit_tracker.report(db, day)
+            result["books"][book] = {"status": "READY", "reconciled": ledger["reconciled"], "positions": positions,
+                                     "pending_buys": pending_buys, "account": profits["account"],
+                                     "closed_campaigns": [c for c in profits["campaigns"] if c["trade_closed"]]}
+            if not ledger["reconciled"]:
+                result["alerts"].append({"level": "P0", "book": book, "text": "账实不符：现金或股数与成交不守恒，停止新增风险"})
+            for p in positions:
+                level = ("P0" if p["trade_state"] == "EXIT_BLOCKED" else "P1" if p["action"] in ("EXIT_REQUIRED", "REDUCE_REQUIRED", "MANUAL_REVIEW")
+                         else "P2" if p["action"] == "HOLD_REVIEW" else None)
+                if level:
+                    result["alerts"].append({"level": level, "book": book, "symbol": p["symbol"], "name": p["name"],
+                                             "action": p["action_word"], "text": p["action_reason"]})
+        except Exception as exc:  # one broken ledger never hides the others
+            result["books"][book] = {"status": "FAILED", "error": str(exc)[:300]}
+            result["alerts"].append({"level": "P0", "book": book, "text": f"账本读取失败：{str(exc)[:120]}"})
+    result["alerts"].sort(key=lambda a: a["level"])
+    result["status"] = "ALERT" if any(a["level"] == "P0" for a in result["alerts"]) else "READY"
+    return result
+
+
+def yuan(cents):
+    return "—" if cents is None else f"{cents / 100:,.2f}"
+
+
+def render(result):
+    lines = [f"# 持仓行动 {result['as_of']}", ""]
+    m = result.get("market_risk") or {}
+    if m.get("level") == "TREND_EXIT":
+        lines += ['<div style="background:#c00000;color:#fff;padding:14px 18px;font-size:20px;font-weight:bold;border:4px solid #7a0000">',
+                  f"🔴🔴🔴 大盘风险：趋势清仓 🔴🔴🔴<br>{m['text']}<br>规则：{m['rule']}</div>", ""]
+    elif m.get("level") == "CRITICAL":
+        lines += [f'<div style="background:#b36b00;color:#fff;padding:12px 16px;font-size:18px;font-weight:bold;border:3px solid #7a4600">🟠 {m["text"]}</div>', ""]
+    elif m.get("level") in ("STALE", "UNKNOWN"):
+        lines += [f'<div style="background:#b36b00;color:#fff;padding:10px 14px;font-weight:bold">🟠 大盘风险未确认：{m.get("text")}</div>', ""]
+    elif m:
+        lines += [f"🟢 {m['text']}", ""]
+    w = result.get("market_warning") or {}
+    if w.get("level") == "WARNING":
+        items = "；".join(f"{r['index']}：{r['text']}" for r in w["indices"] if r["level"] == "WARNING")
+        lines += [f'<div style="background:#b35900;color:#fff;padding:10px 14px;font-weight:bold">🟠 短期回调预警：{items}</div>',
+                  f"<small>{w['rule']}</small>", ""]
+    rb = result.get("rebound_basket") or {}
+    if rb.get("level") == "TRIGGERED_TODAY":
+        b = rb["basket"]
+        picks = "、".join(f"{x['name']}{x['symbol'][3:]}({x['dd60']:.0%})" for x in b["picks"]) or "无"
+        lines += ['<div style="background:#1f3a8a;color:#fff;padding:14px 18px;font-size:18px;font-weight:bold;border:4px solid #0b1f5c">',
+                  f"🟦 大跌反弹篮子触发 🟦<br>{rb['text']}<br>候选（Q1 共 {b['q1_size']} 只，{b['pick_rule']}）：{picks}<br>"
+                  f"规则：{rb['rule']}</div>", ""]
+    elif rb.get("level") == "ACTIVE":
+        lines += [f'<div style="background:#1f3a8a;color:#fff;padding:10px 14px;font-weight:bold">🟦 {rb["text"]}</div>', ""]
+    elif rb.get("level") in ("STALE", "UNKNOWN"):
+        lines += [f"🟠 {rb.get('text')}", ""]
+    elif rb:
+        lines += [f"⚪ {rb['text']}", ""]
+    dip = result.get("etf_dip") or {}
+    if dip.get("level") in ("TRIGGERED_TODAY", "HOLDING"):
+        new = "；".join(f"{r['index']}（{r['group']}，{r['signal']}，抄底仓的 {r['size_of_sleeve']:.1%}{'，ETF ' + r['etf'] if r['etf'] else ''}）"
+                       for r in dip["new"])
+        hold = "；".join(f"{r['index']} {r['signal']}（{r['entry_day']} 开盘 {r['entry']:.2f} 买入，占 {r['size_of_sleeve']:.1%}，"
+                        f"还剩 {r['sessions_left']} 个交易日后卖出）" for r in dip["holding"])
+        lines += ['<div style="background:#0f766e;color:#fff;padding:12px 16px;font-weight:bold">',
+                  (f"🟩 宽基 ETF 抄底信号：明日开盘按规则买入 {new}<br>" if dip["new"] else "")
+                  + (f"🟩 抄底仓按规则持有：{hold}（合计占抄底仓 {dip['exposure']:.1%}）" if dip["holding"] else "") + "</div>",
+                  f"<small>{dip['rule']}</small>", ""]
+    elif dip:
+        lines += [f"⚪ 宽基 ETF 抄底：{dip.get('text')}", ""]
+    lines += [result["notice"], ""]
+    if result["alerts"]:
+        lines += ["## 待处理", ""] + [f"- **{a['level']} {a['book']}** {a.get('name') or ''}{a.get('symbol') or ''} {a.get('action') or ''}：{a['text']}"
+                                   for a in result["alerts"]] + [""]
+    for book, b in result["books"].items():
+        lines += [f"## {book}", ""]
+        if b.get("status") != "READY":
+            lines += [f"状态：{b.get('status')} {b.get('error', '')}", ""]
+            continue
+        a = b["account"]
+        lines.append(f"净资产 {yuan(a['equity_cents'])}；现金 {yuan(a['cash_cents'])}；账户利润 {yuan(a['money_pnl_cents'])}；"
+                     f"单位净值回撤 {a['max_drawdown_unit_nav']:.2%}；压力情景合计损失 {yuan(a['stress_wealth_loss_cents'])}；对账 {'通过' if b['reconciled'] else '失败'}。")
+        if b["pending_buys"]:
+            lines.append("未决买单（占席位与资金，未成交不记仓）：" + "、".join(f"{o['symbol']} {o['quantity']}股" for o in b["pending_buys"]))
+        if not b["positions"]:
+            lines += ["", "无持仓。", ""]
+            continue
+        lines += ["", "|股票|动作|持有/可售|净盈亏|峰值/回吐|今日保护→下一保护|按保护退出估算|压力退出|原因|",
+                  "|---|---|---|---:|---|---|---:|---:|---|"]
+        for p in b["positions"]:
+            c, q = p["profit"], p["six_questions"]
+            ratio = "—" if c.get("giveback_ratio") is None else f"{c['giveback_ratio']:.0%}"
+            lines.append(f"|{p['name']} {p['symbol']}|{p['action_word']}|{q['holding']['held']}/{q['holding']['sellable']}|"
+                         f"{yuan(c.get('net_pnl_cents'))}|{yuan(c['observed_peak_cents'])}/{ratio}|"
+                         f"{yuan(q['protection']['effective_today_cents'])}→{yuan(q['protection']['next_session_cents'])}|"
+                         f"{yuan(c.get('net_pnl_if_exit_at_protection_cents'))}|{yuan(c.get('net_pnl_if_stress_exit_cents'))}|{p['action_reason']}|")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", required=True)
+    args = parser.parse_args()
+    result = run(args.date)
+    OUT.mkdir(parents=True, exist_ok=True)
+    stem = OUT / result["as_of"].replace("-", "")
+    stem.with_suffix(".json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    stem.with_suffix(".md").write_text(render(result), encoding="utf-8")
+    m = result["market_risk"]
+    mark = "!!!!!!!!!! " if m["level"] == "TREND_EXIT" else ">>>>>>>>>> " if m["level"] == "CRITICAL" else ""
+    print(f"[position_monitor] {mark}大盘风险 {m['level']}：{m['text']}", flush=True)
+    w = result["market_warning"]
+    print(f"[position_monitor] 短期回调预警 {w['level']}：" + "；".join(f"{r['index']} {r['level']}" for r in w["indices"]), flush=True)
+    dip = result["etf_dip"]
+    print(f"[position_monitor] {'>>>>>>>>>> ' if dip['level'] == 'TRIGGERED_TODAY' else ''}ETF 抄底 {dip['level']}：{dip['text']}", flush=True)
+    rb = result["rebound_basket"]
+    print(f"[position_monitor] {'>>>>>>>>>> ' if rb['level'] == 'TRIGGERED_TODAY' else ''}反弹篮子 {rb['level']}：{rb['text']}", flush=True)
+    counts = {b: len(v.get("positions", [])) for b, v in result["books"].items()}
+    print(f"[position_monitor] {result['as_of']} status={result['status']} positions={counts} alerts={len(result['alerts'])} -> {stem}.json", flush=True)
+    return 2 if result["status"] == "ALERT" else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+====================================================================================================
+FILE: mainwave_engine/index_trend.py
+LINES: 104  SHA256[:16]: 4097e9fddd3af9d1  BYTES: 5431
+SOURCE: D:\AICode\Astock\mainwave_engine\index_trend.py
+====================================================================================================
+"""核心指数中期趋势环境门。
+
+只做多的市场里, 同一个形态在指数中期趋势向上和向下时含义不同。AStockV2 的
+分层检验 (D:/AICode/AStockV2/docs/市场环境分层与入场时机_20261120.md) 显示:
+S4 追启动日次日开盘的入场时点, 在核心指数中期上行时比"同一只股票随机某天
+入场"系统性差约 1%/笔; 3 个指数 x 3 种 EMA 长度 x 3 种回看 = 27 组参数
+全部显著为负、零组反向, 去掉最大赢家不变。指数下行时方向相反, 但样本只有
+3-4 段独立行情, 不足以作为正面结论。
+
+所以这里只做一件事: 把"核心指数 EMA100 斜率为正"标成不开新仓的环境。
+判据只用当日收盘已知的信息 (EMA 是因果的, 斜率只用当日与 lookback 根之前
+的值)。数据不足时按未知处理并拒绝开新仓, 与中证1000 趋势门一致: 风险门
+不因数据缺失而放行。
+
+与 mainwave_engine.trading.position_monitor.market_risk 的分工:
+  market_risk  中证1000 收盘 vs MA20, 快门, 管短期趋势破位;
+  index_trend  沪深300 EMA100 斜率, 慢门, 管中期趋势方向下的形态入场时机。
+两者不是同一个判据, 也不是同一个周期。
+
+python -c "from mainwave_engine import index_trend as T; print(T.regime('2026-11-19'))"
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from pathlib import Path
+
+import pandas as pd
+
+VERSION = "index_trend_v1_1_20261124"
+INDEX_FILE = "000300_SH_index.csv"
+INDEX_NAME = "沪深300"
+SPAN = 100
+LOOKBACK = 10
+MIN_BARS = 250
+RULE = ("核心指数中期趋势门: 沪深300 EMA100 与 10 个交易日前的比值。"
+        "斜率为正 -> 不开 S4 新仓 (该环境下形态启动日入场的时点价值为负); "
+        "斜率为负 -> 允许 (但尚无充分样本证明更好); 数据不足 -> 未知, 不开新仓。")
+EVIDENCE = ("依据 AStockV2 分层检验 (2026-11-20): 27 组参数下 S4 入场时点"
+            "在该环境显著劣于同股随机入场; 指数下行方向的证据样本不足, "
+            "仅作观察, 不作为正面结论。")
+
+
+def _frame(as_of: str, data_root) -> pd.DataFrame:
+    path = Path(data_root) / INDEX_FILE
+    f = pd.read_csv(path)
+    f["date"] = pd.to_datetime(f["trade_date"].astype(str)).dt.strftime("%Y-%m-%d")
+    f["close"] = pd.to_numeric(f["close"], errors="coerce")
+    f = f.dropna(subset=["date", "close"]).sort_values("date")
+    return f[f["date"] <= as_of].drop_duplicates("date").reset_index(drop=True)
+
+
+def regime(as_of: str, data_root=None, span: int = SPAN,
+           lookback: int = LOOKBACK) -> dict:
+    """核心指数中期趋势环境。返回的 gate 取 BLOCK / ALLOW / UNKNOWN。"""
+    base = {"as_of": as_of, "index": INDEX_NAME, "version": VERSION, "rule": RULE,
+            "evidence": EVIDENCE, "report_only": False,
+            "gate": "UNKNOWN", "regime": "UNKNOWN", "status": "UNKNOWN",
+            "data_date": "", "close": None, "ema": None, "slope": None, "text": ""}
+    try:
+        f = _frame(as_of, data_root or Path("data"))
+    except (OSError, ValueError, KeyError, pd.errors.EmptyDataError) as exc:
+        return {**base, "status": "MISSING",
+                "text": f"{INDEX_NAME} 日线不可用 ({str(exc)[:80]}), 中期趋势未知, 不开 S4 新仓"}
+    if len(f) < MIN_BARS:
+        return {**base, "status": "INSUFFICIENT_HISTORY", "data_date": str(f["date"].iloc[-1]) if len(f) else "",
+                "text": f"{INDEX_NAME} 历史不足 {MIN_BARS} 个交易日, 中期趋势未知, 不开 S4 新仓"}
+    c = f["close"].astype(float).reset_index(drop=True)
+    if not c.gt(0).all() or not c.map(math.isfinite).all():
+        return {**base, "status": "INVALID_PRICE", "data_date": str(f["date"].iloc[-1]),
+                "text": f"{INDEX_NAME} 日线收盘价无效，中期趋势未知，不开 S4 新仓"}
+    ema = c.ewm(span=span, adjust=False).mean()
+    slope = float(ema.iloc[-1] / ema.iloc[-1 - lookback] - 1)
+    close = float(c.iloc[-1])
+    data_date = str(f["date"].iloc[-1])
+    fresh = data_date == as_of
+    if not fresh:
+        return {**base, "status": "STALE", "data_date": data_date, "close": round(close, 2),
+                "ema": round(float(ema.iloc[-1]), 2), "slope": round(slope, 4),
+                "text": f"{INDEX_NAME} 最新日线为 {data_date}, 不是 {as_of}, 中期趋势未确认, 不开 S4 新仓"}
+    up = slope > 0
+    return {**base, "status": "FRESH", "data_date": data_date, "close": round(close, 2),
+            "ema": round(float(ema.iloc[-1]), 2), "slope": round(slope, 4),
+            "regime": "UP" if up else "DOWN",
+            "gate": "BLOCK" if up else "ALLOW",
+            "text": (f"{INDEX_NAME} EMA{span} 中期趋势向上 (10 日斜率 {slope*100:+.2f}%), "
+                     f"该环境下形态启动日入场的时点价值为负, 不开 S4 新仓"
+                     if up else
+                     f"{INDEX_NAME} EMA{span} 中期趋势向下 (10 日斜率 {slope*100:+.2f}%), 允许 S4 新仓"
+                     "(该环境的正面证据样本不足, 只作观察)")}
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--date", required=True)
+    ap.add_argument("--data-root", default="data")
+    args = ap.parse_args()
+    out = regime(args.date, args.data_root)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+
+====================================================================================================
+FILE: mainwave_engine/virtual_portfolio.py
+LINES: 424  SHA256[:16]: b08a13d566fcd17b  BYTES: 24909
+SOURCE: D:\AICode\Astock\mainwave_engine\virtual_portfolio.py
+====================================================================================================
+"""Persistent paper positions with entry-anchored, advice-only daily risk review."""
+from __future__ import annotations
+
+import argparse
+from contextlib import closing
+from datetime import date, datetime, timedelta, timezone
+import json
+import math
+from pathlib import Path
+import sqlite3
+from uuid import uuid4
+
+import pandas as pd
+
+from . import exit_policy as XP, route_evidence as RE, stock_analyzer as SA
+from . import stock_lifecycle as SL
+from .pipeline import _write
+from .theme_lifecycle import market_calendar
+
+VERSION = "virtual_portfolio_v1"
+DB_PATH = Path(__file__).resolve().parents[1] / "results/mainwave_engine/virtual_portfolio/positions.sqlite3"
+NOTICE = "手工虚拟持仓，按指定行情日原始收盘价记账；不是实盘成交。未设股数，不计算账户金额；复权价差不含费用，不等同现金收益。风险建议不自动减仓或卖出。"
+LABELS = {"HOLD": "继续持有观察", "SOFT_CONFIRMING": "收盘保护确认中", "REDUCE": "建议分批减仓",
+          "SELL": "建议卖出剩余", "DATA_WAIT": "数据待核验", "NEW": "已加入，待日常评估"}
+
+
+STRATEGIES = {"S4_LAD": "S4 回踩再启动 · 分批止盈（S4离场研究_20260925.md）"}
+LAD_VERSION = "s4_lad_v3_20260929"  # v2 graded denial exit (B2h) + S4 event identity; v3 sells the rest on the CSI 1000 trend exit (G1)
+# Rules each stored policy version replays with; a position is always reviewed under the version it was entered with.
+LAD_POLICIES = {"s4_lad_v1_20260925": {"b2h": False, "g1": False},
+                "s4_lad_v2_20260926": {"b2h": True, "g1": False},
+                "s4_lad_v3_20260929": {"b2h": True, "g1": True}}
+# Migration approved by the user on 2026-09-29 ("S4 分批止盈补上 G1 红灯时卖出剩余", applied to the open S4 positions):
+# older versions take the G1 exit only on G1 sessions from this date on; earlier G1 sessions are not replayed into them.
+G1_MIGRATION = "2026-09-29"
+
+
+class Conflict(ValueError):
+    pass
+
+
+def connect(db):
+    db = Path(db)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS positions (
+            id TEXT PRIMARY KEY, symbol TEXT NOT NULL, entry_date TEXT NOT NULL,
+            status TEXT NOT NULL, payload TEXT NOT NULL);
+        CREATE UNIQUE INDEX IF NOT EXISTS one_open_symbol ON positions(symbol) WHERE status='OPEN';
+        CREATE TABLE IF NOT EXISTS observations (
+            position_id TEXT NOT NULL, as_of TEXT NOT NULL, payload TEXT NOT NULL,
+            PRIMARY KEY(position_id, as_of));
+    """)
+    return conn
+
+
+def checked_date(value):
+    day = date.fromisoformat(value)
+    if day.isoformat() != value or day > datetime.now(timezone(timedelta(hours=8))).date():
+        raise ValueError("需要已经结束的行情日期，格式 YYYY-MM-DD")
+    now = datetime.now(timezone(timedelta(hours=8)))
+    if day == now.date() and now.hour < 15:
+        raise ValueError("今日尚未收盘，请使用已收盘交易日")
+    return value
+
+
+def load_frame(symbol, as_of):
+    raw = pd.read_csv(Path("data") / f"{symbol}_daily.csv", encoding="utf-8-sig")
+    raw["date"] = pd.to_datetime(raw.date)
+    raw = raw[raw.date.le(as_of)].sort_values("date").drop_duplicates("date", keep="last")
+    return RE.build(raw, symbol)
+
+
+def close_quote(symbol, as_of):
+    checked_date(as_of)
+    f = load_frame(symbol, as_of)
+    if f.empty or f.date.iloc[-1].strftime("%Y-%m-%d") != as_of or as_of not in market_calendar(as_of):
+        raise ValueError("该日没有有效收盘行情或交易日历，不能用旧价格记账")
+    r = f.iloc[-1]
+    if not all(math.isfinite(float(r[k])) and float(r[k]) > 0 for k in ("close", "atr20", "index_close")):
+        raise ValueError("收盘价或初始波动数据无效")
+    return f, r
+
+
+def add(symbol, as_of, db=DB_PATH, strategy=None, meta=None):
+    if strategy is not None and strategy not in STRATEGIES:
+        raise ValueError(f"未知策略：{strategy}")
+    symbol = SA.normalize_symbol(symbol)
+    # Fast retry path also preserves the original price/date after later daily updates.
+    with closing(connect(db)) as conn:
+        old = conn.execute("SELECT payload FROM positions WHERE symbol=? AND status='OPEN'", (symbol,)).fetchone()
+        if old:
+            return {"position": json.loads(old[0]), "created": False}
+    _, quote = close_quote(symbol, as_of)
+    board = SA._read_json(SA.OUT_ROOT / as_of.replace("-", "") / "analysis_universe.json", {})
+    context = next((r for r in board.get("records", []) if r["symbol"] == symbol), {})
+    identity = SA._mapping(symbol)
+    row = {"id": uuid4().hex, "symbol": symbol, "name": context.get("name") or identity.get("name") or symbol,
+           "theme": context.get("belonging_theme", ""), "route_ids": context.get("route_ids", ""),
+           "entry_date": as_of, "entry_price": float(quote.close),
+           "atr_fraction": float(quote.atr20 / quote.index_close), "status": "OPEN",
+           "source": "MANUAL_CLOSE", "created_at": datetime.now(timezone.utc).isoformat(),
+           "version": VERSION, "exit_policy_version": LAD_VERSION if strategy == "S4_LAD" else XP.VERSION}
+    if strategy:
+        row["strategy"] = strategy
+    row.update({k: v for k, v in (meta or {}).items() if k.startswith("s4_")})
+    if 2 * row["atr_fraction"] >= 1:
+        raise ValueError("初始风险底线无效，不能建立虚拟持仓")
+    with closing(connect(db)) as conn, conn:
+        conn.execute("INSERT OR IGNORE INTO positions VALUES (?, ?, ?, ?, ?)",
+                     (row["id"], symbol, as_of, "OPEN", json.dumps(row, ensure_ascii=False)))
+        stored = json.loads(conn.execute("SELECT payload FROM positions WHERE symbol=? AND status='OPEN'", (symbol,)).fetchone()[0])
+    return {"position": stored, "created": stored["id"] == row["id"]}
+
+
+def positions(db=DB_PATH):
+    if not Path(db).exists():
+        return []
+    with closing(connect(db)) as conn:
+        return [json.loads(r[0]) for r in conn.execute("SELECT payload FROM positions ORDER BY entry_date DESC, symbol, id")]
+
+
+def load_g1(as_of):
+    """Sessions with the CSI 1000 trend exit (G1) on: close < MA20 and MA20 below its level five sessions earlier."""
+    path = Path(__file__).resolve().parents[1] / "data/000852_SH_index.csv"
+    if not path.exists():
+        return frozenset()
+    m = XP.market_frame(pd.read_csv(path), as_of)
+    return frozenset(m.index[m.market_weak.to_numpy()].strftime("%Y-%m-%d"))
+
+
+def evaluate(position, frame, as_of, calendar, market, g1=frozenset()):
+    """Rebuild advice from the actual paper close entry, never a signal's hypothetical open."""
+    base = {"as_of": as_of, "version": VERSION, "policy_version": XP.VERSION,
+            "status": "DATA_WAIT", "reason": "行情缺失或不连续，不能判为持有安全", "events": []}
+    f = frame[frame.date.le(as_of)].copy().reset_index(drop=True)
+    if f.empty:
+        return base
+    days = f.date.dt.strftime("%Y-%m-%d").tolist()
+    base.update(price_date=days[-1], close=float(f.close.iloc[-1]))
+    entry_day = position["entry_date"]
+    if entry_day not in days:
+        return base
+    entry = days.index(entry_day)
+    if not math.isclose(float(f.close.iloc[entry]), position["entry_price"], rel_tol=1e-6):
+        return {**base, "reason": "入场日原始行情已修订，请核对原始成本；不自动覆盖台账"}
+    present = set(days) | set(frame.attrs.get("suspended_days", []))
+    needed = [d for d in calendar if entry_day <= d <= as_of]
+    if not needed or needed[-1] != as_of or any(d not in present for d in needed):
+        return base
+    relevant = f.iloc[entry:][["index_open", "index_high", "index_low", "index_close", "close"]]
+    if relevant.isna().any().any() or not relevant.map(lambda x: math.isfinite(x) and x > 0).all().all():
+        return base
+    if position.get("strategy") == "S4_LAD":
+        return lad_review(f, entry, days, as_of, base, position, g1)
+    f = XP.enrich(f, market)
+    a = {c: f[c].to_numpy() for c in f.columns}
+    price = float(f.index_close.iloc[entry])
+    atr = price * position["atr_fraction"]
+    hard = soft = price - 2 * atr
+    peak, pending, reduction, breaches, required = price, "", False, 0, 1
+    events, seen = [], set()
+    initial_warning, _ = XP.warning(a, entry, entry, price, atr, price)
+    if initial_warning == "EXIT_STRUCTURE":
+        pending = initial_warning
+        events.append({"date": entry_day, "reason": pending, "label": XP.REASONS[pending]})
+        seen.add(pending)
+    # Close entry: the entry day's earlier low/high cannot trigger a stop or profit target.
+    for j in range(entry + 1, len(f)):
+        reasons = []
+        if a["index_low"][j] <= hard:
+            pending = "INITIAL_STOP"
+        review = XP.close_review(a, j, entry, price, atr, peak, soft_stop=soft, breaches=breaches,
+                                 required=required, pending_exit=pending, pending_reduce=reduction)
+        soft, breaches, required = (review[k] for k in ("soft_stop", "breaches", "required"))
+        pending, reduction = review["pending_exit"], review["pending_reduce"]
+        if j - entry + 1 >= 60:
+            pending = pending or "HORIZON"
+        if pending:
+            reasons.append(pending)
+        elif reduction:
+            reasons.append("RISK_REDUCTION")
+        for multiple in (3, 6):
+            if a["index_high"][j] >= price + multiple * atr:
+                reasons.append(f"TARGET_{multiple}ATR")
+                reduction = True
+        for reason in reasons:
+            if reason not in seen:
+                events.append({"date": days[j], "reason": reason,
+                               "label": XP.REASONS.get(reason, f"达到{reason.removeprefix('TARGET_')}分批保护位")})
+                seen.add(reason)
+        peak = max(peak, float(a["index_high"][j]))
+    current = f.iloc[-1]
+    scale = float(current.close / current.index_close)
+    suspended = days[-1] != as_of
+    status = "SELL" if pending else "REDUCE" if reduction else "SOFT_CONFIRMING" if breaches else "HOLD"
+    reason = (XP.REASONS.get(pending) if pending else "分批保护信号已出现，尚未登记处置" if reduction
+              else f"连续收盘失守 {breaches}/{required} 次" if breaches else "尚未触发持仓退出规则")
+    return {**base, "status": "DATA_WAIT" if suspended else status,
+            "reason": "已知停牌，等待可交易行情；此前风险仍需处置" if suspended else reason,
+            "pending_action": status if suspended else "", "events": events,
+            "return_pct": float((current.index_close / price - 1) * 100),
+            "raw_return_pct": float((current.close / position["entry_price"] - 1) * 100),
+            "hard_floor": hard * scale, "soft_floor": soft * scale, "soft_breaches": breaches,
+            "soft_required": required, "held_sessions": len(f) - entry,
+            "strong": bool(current.exit_strong), "market_known": bool(current.market_known),
+            "pending_reason": pending, "alert_since": events[0]["date"] if events else ""}
+
+
+def lad_review(f, entry, days, as_of, base, position=None, g1=frozenset()):
+    """S4 staged profit-taking (LAD), advice only; mirrors research/exit_study_s4.py on the paper close entry:
+    1/3 at +10% and 1/3 at +20% (intraday touch); the rest leaves at the next open after two closes < EMA20 x 0.97,
+    or, once a close has been >= +10%, a heavy bearish candle or long upper shadow on >= 1.5x volume; -10% intraday
+    stop; 60 sessions. Also reports the return a strict LAD execution would have made (adjusted prices, no fees).
+    v2 graded denial (research/accept_failure.py B2h): within 3 sessions a close below the signal day's open sells
+    half; a close below the pullback low (lowest low of the 10 sessions before the signal), or two closes below EMA20
+    within 5 sessions, sells the rest. The signal day is the entry day (the paper entry is that day's close).
+    v3: a session in g1 (the CSI 1000 trend exit, S4研究总结_20260925.md §4) sells the rest at the next open.
+    The position's stored exit_policy_version selects the rules (LAD_POLICIES); older versions take G1 only from
+    G1_MIGRATION. Stored s4_pullback_low / s4_signal_open (raw prices frozen at the pick) are used when present,
+    converted to the adjusted series by the entry day's ratio; otherwise they are rebuilt from the frame.
+    Every partial sale is capped at what is still held (research/accept_failure.py sell(): q = min(q, pos))."""
+    position = position or {}
+    version = position.get("exit_policy_version") or LAD_VERSION
+    if version not in LAD_POLICIES:
+        return {**base, "status": "DATA_WAIT", "reason": f"未知的分批止盈版本 {version}，不按现行规则替代回放"}
+    policy = LAD_POLICIES[version]
+    g1_from = "" if policy["g1"] else G1_MIGRATION
+    o, h, l, c = (f[k].to_numpy(float) for k in ("index_open", "index_high", "index_low", "index_close"))
+    ema20 = f.index_close.ewm(span=20, adjust=False).mean().to_numpy()
+    vol = (f["volume"] if "volume" in f else f["amount"]).astype(float)
+    vr = vol / vol.shift(1).rolling(20).mean()
+    e = c[entry]
+    held, realized, events = 1.0, 0.0, []
+    pending, exited, below, armed, sold = "", None, 0, False, 0
+    to_adj = float(f.index_close.iloc[entry] / f.close.iloc[entry])  # raw price -> adjusted series on the entry day
+    stored = position.get("s4_pullback_low") is not None and position.get("s4_signal_open") is not None
+    pb_low = float(position["s4_pullback_low"]) * to_adj if stored else l[max(0, entry - 10):entry].min()
+    sig_open = float(position["s4_signal_open"]) * to_adj if stored else o[entry]
+    half, warned, under = False, False, 0
+    for j in range(entry + 1, len(f)):
+        if pending:
+            realized += held * o[j] / e
+            held, exited = 0.0, (days[j], pending)
+            break
+        if half:
+            realized += held / 2 * o[j] / e
+            held, half = held / 2, False
+        if l[j] <= e * 0.90:
+            realized += held * min(o[j], e * 0.90) / e
+            held, exited = 0.0, (days[j], "止损 −10%")
+            events.append({"date": days[j], "reason": "LAD_STOP", "label": "盘中触及 −10% 止损，卖出剩余"})
+            break
+        for n, level in ((1, 1.10), (2, 1.20)):
+            if sold < n and h[j] >= e * level:
+                sold = n
+                q = min(1 / 3, held)
+                realized += q * max(o[j], e * level) / e
+                held -= q
+                events.append({"date": days[j], "reason": f"LAD_TP{n}",
+                               "label": f"达到 +{round((level - 1) * 100)}%，按规则卖出 1/3" + ("（即剩余全部）" if held <= 1e-9 else "")})
+        if held <= 1e-9:
+            held, exited = 0.0, (days[j], "分批止盈后已无剩余")
+            break
+        armed = armed or c[j] >= e * 1.10
+        below = below + 1 if c[j] < ema20[j] * 0.97 else 0
+        under = under + 1 if j - entry <= 5 and c[j] < ema20[j] else 0
+        if policy["b2h"] and not warned and j - entry <= 3 and c[j] < sig_open:
+            warned = half = True
+            events.append({"date": days[j], "reason": "LAD_WARN", "label": "恢复阳线被吞没（收盘低于信号日开盘），下一交易日开盘卖一半"})
+        body = (o[j] - c[j]) / c[j - 1]
+        rng = h[j] - l[j]
+        heavy = (c[j] / c[j - 1] - 1 <= -0.05 or body >= 0.04) and vr.iloc[j] >= 1.5
+        shadow = rng > 0 and (h[j] - max(o[j], c[j])) / rng >= 0.5 and rng / c[j - 1] >= 0.05 and vr.iloc[j] >= 1.5
+        if days[j] in g1 and days[j] >= g1_from:
+            pending = "大盘趋势清仓（G1：中证1000 收盘跌破 MA20 且 MA20 下拐）"
+        elif policy["b2h"] and c[j] < pb_low:
+            pending = "收盘跌破回踩低点（回踩事件被否定）"
+        elif policy["b2h"] and under >= 2:
+            pending = "买入后 5 日内两次收于 EMA20 下（恢复被否定）"
+        elif below >= 2:
+            pending = "两日收盘跌破 EMA20×0.97"
+        elif armed and (heavy or shadow):
+            pending = "放量大阴线" if heavy else "放量长上影"
+        elif j - entry >= 60:
+            pending = "持有满 60 个交易日"
+        if pending:
+            events.append({"date": days[j], "reason": "LAD_EXIT", "label": f"{pending}，下一交易日开盘卖出剩余"})
+    scale = float(f.close.iloc[-1] / f.index_close.iloc[-1])
+    mark = realized + held * c[-1] / e
+    latest = [x for x in events if x["date"] == days[-1]]
+    status = ("SELL" if exited or pending else
+              "REDUCE" if any(x["reason"].startswith(("LAD_TP", "LAD_WARN")) for x in latest) else "HOLD")
+    done = f"已按规则卖出 {1 - held:.0%}" if held < 1 else "尚未减仓"
+    reason = (f"{exited[0]} 按规则卖出剩余（{exited[1]}）" if exited else f"{pending}：下一交易日开盘卖出剩余" if pending
+              else "；".join(x["label"] for x in latest) if status == "REDUCE" else f"持有；{done}")
+    suspended = days[-1] != as_of
+    return {**base, "status": "DATA_WAIT" if suspended else status, "reason": reason, "events": events,
+            "strategy": "S4_LAD", "policy_version": version,
+            "g1_rule": "入场版本自带" if policy["g1"] else f"迁移：{G1_MIGRATION} 起适用（用户 2026-09-29 批准）",
+            "anchor_source": "记入时冻结" if stored else "按行情重建",
+            "return_pct": float((c[-1] / e - 1) * 100), "raw_return_pct": float((c[-1] / e - 1) * 100),
+            "lad_return_pct": float((mark - 1) * 100), "lad_remaining": round(held, 4),
+            "hard_floor": e * 0.90 * scale, "soft_floor": ema20[-1] * 0.97 * scale,
+            "tp1": e * 1.10 * scale, "tp2": e * 1.20 * scale,
+            "pullback_low": pb_low * scale, "signal_open": sig_open * scale,
+            "held_sessions": len(f) - entry, "pending_reason": pending, "alert_since": events[0]["date"] if events else "",
+            "pending_action": status if suspended else ""}
+
+
+def scan_position(position, as_of):
+    frame = load_frame(position["symbol"], as_of)
+    result = evaluate(position, frame, as_of, market_calendar(as_of), XP.load_market(as_of), load_g1(as_of))
+    if result["status"] != "DATA_WAIT":
+        try:
+            cycle, _ = SL.analyze(position["symbol"], as_of, trajectory=pd.DataFrame())
+            result["lifecycle"] = cycle.get("cycle_stage_label", "未形成")
+            result["cycle_id"] = cycle.get("cycle_id", "")
+        except (OSError, ValueError, KeyError) as exc:
+            result["lifecycle"] = f"生命周期待核验：{exc}"
+    return result
+
+
+def run(as_of, db=DB_PATH, output_root=None):
+    checked_date(as_of)
+    records = []
+    for position in positions(db):
+        if position["entry_date"] > as_of or (position["status"] == "CLOSED" and position["exit_date"] <= as_of):
+            continue
+        try:
+            observation = scan_position(position, as_of)
+        except (OSError, ValueError, KeyError) as exc:
+            observation = {"as_of": as_of, "version": VERSION, "status": "DATA_WAIT", "reason": str(exc), "events": []}
+        with closing(connect(db)) as conn, conn:
+            conn.execute("INSERT OR REPLACE INTO observations VALUES (?, ?, ?)",
+                         (position["id"], as_of, json.dumps(observation, ensure_ascii=False, allow_nan=False)))
+        records.append({**position, "observation": observation})
+        print(f"[virtual_portfolio] {position['symbol']} {LABELS[observation['status']]}: {observation['reason']}", flush=True)
+    counts = {key: sum(r["observation"]["status"] == key for r in records) for key in LABELS}
+    payload = {"as_of": as_of, "version": VERSION, "notice": NOTICE, "records": records,
+               "summary": {"total": len(records), **counts, "status": "PARTIAL" if counts["DATA_WAIT"] else "SUCCESS"}}
+    output = (SA.OUT_ROOT if output_root is None else Path(output_root)) / as_of.replace("-", "")
+    _write(output / "virtual_positions.json", payload)
+    lines = [f"# 虚拟持仓监控 {as_of}", "", NOTICE, "", f"持仓 {len(records)} | 卖出 {counts['SELL']} | 减仓 {counts['REDUCE']} | 待核验 {counts['DATA_WAIT']}", ""]
+    for r in records:
+        o = r["observation"]
+        lines += [f"## {r['name']} {r['symbol']}", f"- 加入：{r['entry_date']} 收盘 {r['entry_price']:.3f}",
+                  f"- 评估：{LABELS[o['status']]}；{o['reason']}",
+                  f"- 生命周期：{o.get('lifecycle', '待核验')}；行情日期：{o.get('price_date', '未知')}",
+                  f"- 复权价差：{o.get('return_pct', '--')}%；硬底线：{o.get('hard_floor', '--')}；收盘保护：{o.get('soft_floor', '--')}"]
+        if o.get("strategy") == "S4_LAD":
+            lines.append(f"- S4 分批止盈：剩余 {o['lad_remaining']:.0%}；止盈位 {o['tp1']:.2f} / {o['tp2']:.2f}；"
+                         f"按规则执行的模拟收益 {o['lad_return_pct']:.1f}%")
+        lines.append("")
+    (output / "virtual_positions.md").write_text("\n".join(lines), encoding="utf-8")
+    print(f"[virtual_portfolio] {as_of} total={len(records)} sell={counts['SELL']} reduce={counts['REDUCE']} data_wait={counts['DATA_WAIT']} -> {output / 'virtual_positions.md'}", flush=True)
+    return payload
+
+
+def listing(db=DB_PATH):
+    rows = positions(db)
+    if rows:
+        with closing(connect(db)) as conn:
+            for row in rows:
+                found = conn.execute("SELECT payload FROM observations WHERE position_id=? ORDER BY as_of DESC LIMIT 1", (row["id"],)).fetchone()
+                row["observation"] = json.loads(found[0]) if found else {
+                    "status": "NEW", "reason": "等待日常持仓扫描", "events": [],
+                    "price_date": row["entry_date"], "close": row["entry_price"], "return_pct": 0.,
+                    "hard_floor": row["entry_price"] * (1 - 2 * row["atr_fraction"])}
+                if row["observation"]["status"] == "DATA_WAIT":
+                    for prior in conn.execute("SELECT payload FROM observations WHERE position_id=? ORDER BY as_of DESC", (row["id"],)):
+                        alert = json.loads(prior[0])
+                        if alert["status"] in {"SELL", "REDUCE"}:
+                            row["last_actionable_observation"] = alert
+                            break
+    try:
+        report_date = SA.latest_report_date()
+    except FileNotFoundError:
+        report_date = ""
+    return {"positions": rows, "notice": NOTICE, "labels": LABELS, "version": VERSION, "report_date": report_date}
+
+
+def close_position(position_id, as_of, db=DB_PATH):
+    with closing(connect(db)) as conn:
+        found = conn.execute("SELECT payload FROM positions WHERE id=?", (position_id,)).fetchone()
+    if not found:
+        raise ValueError("虚拟持仓不存在")
+    position = json.loads(found[0])
+    if position["status"] == "CLOSED":
+        return position
+    if as_of <= position["entry_date"]:
+        raise ValueError("按A股T+1约束，加入当日不能模拟卖出")
+    f, quote = close_quote(position["symbol"], as_of)
+    from . import data as D
+    limit = D.limit_pct(position["symbol"])
+    if limit == 10 and quote.get("isST") == 1:
+        limit = 5
+    lower = math.floor(float(quote.preclose) * (1 - limit / 100) * 100 + .5) / 100
+    if float(quote.high) <= lower + .001:
+        raise ValueError("当日一字跌停，不能假设卖出成交")
+    with closing(connect(db)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        latest = conn.execute("SELECT MAX(as_of) FROM observations WHERE position_id=?", (position_id,)).fetchone()[0]
+        if latest and as_of < latest:
+            raise Conflict("卖出日期早于已保存的持仓评估，请使用最新行情日")
+        old = json.loads(conn.execute("SELECT payload FROM positions WHERE id=?", (position_id,)).fetchone()[0])
+        if old["status"] == "CLOSED":
+            return old
+        entry = f[f.date.eq(position["entry_date"])]
+        if entry.empty or not math.isclose(float(entry.close.iloc[0]), position["entry_price"], rel_tol=1e-6):
+            raise ValueError("入场行情缺失或已修订，请核验后再卖出")
+        position.update(status="CLOSED", exit_date=as_of, exit_price=float(quote.close),
+                        closed_at=datetime.now(timezone.utc).isoformat(),
+                        return_pct=float((quote.index_close / entry.index_close.iloc[0] - 1) * 100))
+        conn.execute("UPDATE positions SET status='CLOSED', payload=? WHERE id=?", (json.dumps(position, ensure_ascii=False), position_id))
+    return position
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", required=True)
+    run(parser.parse_args().date)
