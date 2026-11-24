@@ -67,6 +67,7 @@ S4 追启动日开盘系统性差约 1%/笔 (分环境的"信号 - 安慰剂"差
 | `tests/` | 证伪台的不变量测试 |
 | `mainwave_code_v2.26.0_20261124/` | v1 主引擎源码包 (engine 2.26.0, 2026-11-24 快照, 含未提交改动)。`MANIFEST.json` 列出打包文件与 SHA-256; 不含 .env、持仓/账本数据库、行情数据、模型权重与 git 元信息 |
 | `项目说明_大富翁系统.md` | 项目现状总纲 |
+| `mainwave_core_20261124.txt` | v1 主引擎核心代码合并（paper / ranking / ranking_shadow / allocation / rules / s4_scan / route_scan，逐字复制，带分隔标记与 SHA-256，可按 `FILE:` 切回单文件）。用 `python merge_core.py` 重新生成 |
 
 ## 外部依赖
 

@@ -1,0 +1,1835 @@
+大富翁系统 主引擎核心代码合并（7 个文件）
+
+生成日期: 2026-11-24
+来源: D:/AICode/Astock（v1 工作区，未提交改动的当前状态）
+说明: 每个文件的内容逐字复制，未做任何改动；分隔线之间是完整文件内容。
+      按 "FILE:" 标记可以把本文件切回单个 .py。
+
+目录（起始行号以本文件为准）:
+       1    406 行  mainwave_engine/trading/paper.py
+     412    171 行  mainwave_engine/trading/ranking.py
+     588    373 行  mainwave_engine/trading/ranking_shadow.py
+     966    109 行  mainwave_engine/trading/allocation.py
+    1080    150 行  mainwave_engine/trading/rules.py
+    1235    322 行  mainwave_engine/s4_scan.py
+    1562    244 行  mainwave_engine/route_scan.py
+
+合计 1775 行代码。
+
+====================================================================================================
+====================================================================================================
+FILE: mainwave_engine/trading/paper.py
+LINES: 406  SHA256[:16]: 297cf3a546e97387
+SOURCE: D:\AICode\Astock\mainwave_engine\trading\paper.py
+====================================================================================================
+"""Paper-only order gateway. Integer cash; fills, not signals, change holdings."""
+from contextlib import contextmanager
+from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
+import hashlib
+import json
+import math
+import re
+from . import store
+
+VERSION = "paper_gateway_v1_20260919"
+MODEL = "NEXT_OPEN_FIXED_CAP_PAPER_ONLY"
+ACTIVE = ("OPEN", "PARTIAL", "UNKNOWN", "EXIT_BLOCKED")
+NOTICE = "独立模拟账户，非真实成交。撮合假设为已提交订单后的交易日开盘、固定单次股数上限；涨跌停开盘不假定成交，不模拟真实排队。旧虚拟持仓不自动迁入。"
+
+
+class Conflict(ValueError):
+    pass
+
+
+def cents(value):
+    try:
+        d = Decimal(str(value))
+        if not d.is_finite():
+            raise ValueError("金额必须有限")
+        return int((d * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    except Exception as exc:
+        raise ValueError("金额无效") from exc
+
+
+def fee(notional, cfg, side):
+    commission = max(cfg["min_fee_cents"], math.ceil(notional * cfg["fee_bps"] / 10000))
+    return commission + (math.ceil(notional * cfg["sell_tax_bps"] / 10000) if side == "SELL" else 0)
+
+
+@contextmanager
+def database(db=store.DB_PATH):
+    with store.connect(db) as conn:
+        # Individual statements preserve the encompassing immediate transaction.
+        for sql in (
+            "CREATE TABLE IF NOT EXISTS paper_account (id INTEGER PRIMARY KEY CHECK(id=1), initial_cents INTEGER NOT NULL, cash_cents INTEGER NOT NULL, created_at TEXT NOT NULL, config TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS paper_plans (id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL REFERENCES snapshots(id), opportunity_id TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS paper_orders (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES paper_plans(id), side TEXT NOT NULL, quantity INTEGER NOT NULL, filled INTEGER NOT NULL, status TEXT NOT NULL, reserve_cents INTEGER NOT NULL, risk_cents INTEGER NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS paper_fills (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES paper_orders(id), day TEXT NOT NULL, quantity INTEGER NOT NULL, price_cents INTEGER NOT NULL, fee_cents INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS paper_lots (id TEXT PRIMARY KEY REFERENCES paper_fills(id), plan_id TEXT NOT NULL REFERENCES paper_plans(id), symbol TEXT NOT NULL, entry_day TEXT NOT NULL, quantity INTEGER NOT NULL, remaining INTEGER NOT NULL, price_cents INTEGER NOT NULL, entry_fee_cents INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS paper_events (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS paper_valuations (id TEXT PRIMARY KEY, as_of TEXT NOT NULL, plan_id TEXT NOT NULL REFERENCES paper_plans(id), payload TEXT NOT NULL)",
+        ):
+            conn.execute(sql)
+        yield conn
+
+
+def event(conn, kind, body, key=None):
+    identity = key or store.digest([kind, body])
+    conn.execute("INSERT OR IGNORE INTO paper_events VALUES (?,?,?,?)", (identity, store.now(), kind, store.encoded(body)))
+
+
+def initialize(body, db=store.DB_PATH, at=None):
+    fields = {"capital", "fee_bps", "min_fee", "sell_tax_bps", "single_risk_pct", "total_risk_pct", "symbol_cap_pct", "theme_cap_pct", "gross_cap_pct", "max_fill_lots"}
+    # Optional account protocol keys (a compounding account); absent keys keep the original behaviour exactly.
+    optional = {"capital_policy", "equity_ceiling", "stock_seats"}
+    if not isinstance(body, dict) or not fields <= set(body) <= fields | optional:
+        raise ValueError("需明确初始本金、费率、单笔/总风险、个股/题材/总敞口及模拟单次成交手数")
+    extra = {k: body[k] for k in optional if k in body}
+    body = {k: v for k, v in body.items() if k in fields}
+    if any(isinstance(v, bool) or not isinstance(v, (int, float, str)) for v in body.values()):
+        raise ValueError("Account settings must be numeric")
+    cfg = {k: float(v) for k, v in body.items()}
+    policy = extra.get("capital_policy", "INITIAL_CAP")
+    if policy not in ("INITIAL_CAP", "COMPOUND_CEILING"):
+        raise ValueError("资本口径只能是 INITIAL_CAP 或 COMPOUND_CEILING")
+    ceiling = float(extra.get("equity_ceiling", cfg["capital"]))
+    seats = extra.get("stock_seats")
+    if not math.isfinite(ceiling) or ceiling < cfg["capital"]:
+        raise ValueError("扩容上限不得低于初始本金")
+    if seats is not None and (isinstance(seats, bool) or not isinstance(seats, int) or not 1 <= seats <= 10):
+        raise ValueError("股票席位需为1至10的整数")
+    if not all(math.isfinite(v) for v in cfg.values()):
+        raise ValueError("配置不能含空值或非有限数")
+    if not 1000 <= cfg["capital"] <= 100000000 or not 0 < cfg["single_risk_pct"] <= cfg["total_risk_pct"] <= 20:
+        raise ValueError("本金或风险范围无效")
+    if not 0 < cfg["symbol_cap_pct"] <= cfg["theme_cap_pct"] <= cfg["gross_cap_pct"] <= 100:
+        raise ValueError("敞口需满足 个股 <= 题材 <= 总敞口 <= 100%")
+    if any(not 0 <= cfg[k] <= 100 for k in ("fee_bps", "sell_tax_bps", "min_fee")):
+        raise ValueError("模拟费率/最低手续费超出允许范围")
+    if not 1 <= cfg["max_fill_lots"] <= 1000 or cfg["max_fill_lots"] % 1:
+        raise ValueError("模拟成交手数需为1至1000的整数")
+    capital = cents(cfg.pop("capital"))
+    cfg["min_fee_cents"] = cents(cfg.pop("min_fee"))
+    cfg.update(model=MODEL, version=VERSION, first_fraction=.5, lot_size=100,
+               additions_enabled=False, live_orders_enabled=False)
+    if extra:
+        cfg.update(capital_policy=policy, equity_ceiling_cents=cents(ceiling), stock_seats=seats)
+    with database(db) as conn:
+        if conn.execute("SELECT 1 FROM paper_account").fetchone():
+            raise Conflict("模拟账户已初始化；不允许重置本金或覆盖历史账本")
+        created = at or store.now()
+        conn.execute("INSERT INTO paper_account VALUES (1,?,?,?,?)", (capital, capital, created, store.encoded(cfg)))
+        event(conn, "ACCOUNT_INITIALIZED", {"capital_cents": capital, "config": cfg})
+    return view(db)
+
+
+def _account(conn):
+    row = conn.execute("SELECT * FROM paper_account WHERE id=1").fetchone()
+    if not row:
+        raise Conflict("尚未配置模拟账户；目前只保存观察和排名")
+    return dict(row), json.loads(row["config"])
+
+
+def source_fingerprint():
+    return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in
+            (store.ROOT / "mainwave_engine/exit_policy.py", store.ROOT / "mainwave_engine/pullback_plan.py")}
+
+
+def _exposure(conn):
+    values = []
+    for lot in conn.execute("SELECT l.*, p.payload FROM paper_lots l JOIN paper_plans p ON p.id=l.plan_id WHERE remaining>0"):
+        p = json.loads(lot["payload"])
+        valuation = conn.execute("SELECT payload FROM paper_valuations WHERE plan_id=? ORDER BY as_of DESC,rowid DESC LIMIT 1", (lot["plan_id"],)).fetchone()
+        v = json.loads(valuation[0]) if valuation else {}
+        mark = v.get("mark_cents", lot["price_cents"])
+        values.append({"symbol": lot["symbol"], "theme": p["theme"],
+                       "cost": lot["remaining"] * max(mark, lot["price_cents"]), "market_value": lot["remaining"] * mark,
+                       "valuation_day": v.get("day"), "valuation_status": v.get("status"),
+                       "risk": lot["remaining"] * max(0, mark - p["stop_cents"])})
+    for o in conn.execute("SELECT o.*,p.payload AS plan FROM paper_orders o JOIN paper_plans p ON p.id=o.plan_id WHERE o.side='BUY' AND o.status IN ('OPEN','PARTIAL','UNKNOWN')"):
+        p = json.loads(o["plan"])
+        values.append({"symbol": p["symbol"], "theme": p["theme"], "cost": o["reserve_cents"], "risk": o["risk_cents"]})
+    return values
+
+
+def submit(identity, symbol, db=store.DB_PATH, at=None, book="MANUAL"):
+    """Explicit approval from UI/CLI (MANUAL) or the frozen mechanical rule (AUTO); never both in one ledger."""
+    if book not in {"MANUAL", "AUTO", "NEW100K"}:
+        raise ValueError("账本只能是 MANUAL、AUTO 或 NEW100K")
+    at = at or store.now()
+    with database(db) as conn:
+        account, cfg = _account(conn)
+        snap = store.snapshot(conn, identity)
+        current = store.latest(conn)
+        if current["snapshot_id"] != identity:
+            raise Conflict("快照已更新，请按最新证据重新复核")
+        if snap["recorded_at"] > at or snap["as_of"] > at[:10] or (datetime.fromisoformat(at[:10]) - datetime.fromisoformat(snap["as_of"])).days > 7:
+            raise Conflict("快照时间无效或过期")
+        row = next((r for r in snap["records"] if r["symbol"] == symbol), None)
+        if not row or not row["paper_plan_eligible"]:
+            raise Conflict("当前机会未通过回踩、市场、数据与风险条件")
+        scope = row.get("alpha_scope") or ranking_scope(row.get("route_ids", ""))
+        if book in ("AUTO", "NEW100K") and scope == "R3_RESEARCH":
+            raise Conflict("R3 仅为研究线索，不进入自动策略账")
+        if not re.fullmatch(r"(?:sh_60|sz_00)\d{4}", symbol) or any(x in row["name"].upper() for x in ("ST", "退")):
+            raise Conflict("首期模拟执行仅普通主板；其他板块继续观察")
+        plan_id = store.digest([row["opportunity_id"], VERSION])[:24]
+        if conn.execute("SELECT 1 FROM paper_plans WHERE id=?", (plan_id,)).fetchone():
+            return {"plan_id": plan_id, "created": False}
+        if any(e["symbol"] == symbol for e in _exposure(conn)):
+            raise Conflict("该股票已有持仓或未决买单，不叠加另一模式预算")
+        w = row["window"]
+        low, limit, stop, atr = (cents(w.get(k)) for k in ("lower", "upper", "invalid", "frozen_atr"))
+        if not 0 < stop < low <= limit or atr <= 0:
+            raise ValueError("冻结结构边界或ATR无效")
+        exposures = _exposure(conn)
+        if any(e.get("market_value") is not None and (e.get("valuation_day") != snap["as_of"] or e.get("valuation_status") != "HOLD") for e in exposures):
+            raise Conflict("已有持仓缺少同日有效估值，先复核持仓风险再开新仓")
+        if conn.execute("SELECT 1 FROM paper_orders WHERE status='UNKNOWN' OR (side='SELL' AND status IN ('OPEN','PARTIAL','EXIT_BLOCKED'))").fetchone():
+            raise Conflict("先处理未决订单和退出风险，再申请新仓")
+        reserved = sum(r[0] for r in conn.execute("SELECT reserve_cents FROM paper_orders"))
+        equity = account["cash_cents"] + sum(x.get("market_value", 0) for x in exposures)
+        # INITIAL_CAP (original): gains never widen the base. COMPOUND_CEILING: losses shrink it at once, gains widen it
+        # up to the approved ceiling, which only a reviewed protocol change raises.
+        capital = (min(equity, cfg["equity_ceiling_cents"]) if cfg.get("capital_policy") == "COMPOUND_CEILING"
+                   else min(account["initial_cents"], equity))
+        seats = cfg.get("stock_seats")
+        if seats and len({e["symbol"] for e in exposures}) >= seats:
+            event(conn, "PLAN_REJECTED", {"symbol": symbol, "snapshot_id": identity, "reason": "NO_SEAT_STOCK"})
+            return {"created": False, "reason": f"股票席位已满（{int(seats)} 只，含未决买单）"}
+        total = sum(x["cost"] for x in exposures)
+        theme = sum(x["cost"] for x in exposures if x["theme"] == row["theme"])
+        budget = min(account["cash_cents"] - reserved, capital * cfg["symbol_cap_pct"] / 100 * cfg["first_fraction"],
+                     capital * cfg["theme_cap_pct"] / 100 - theme, capital * cfg["gross_cap_pct"] / 100 - total)
+        risk_budget = min(capital * cfg["single_risk_pct"] / 100,
+                          capital * cfg["total_risk_pct"] / 100 - sum(x["risk"] for x in exposures))
+        # Fixed hard floor may be below the structure; size using the worse boundary.
+        hard = min(stop, low - 2 * atr)
+        if hard <= 0:
+            raise ValueError("风险边界无效")
+        quantity = max(0, int(min(budget / limit, risk_budget / (limit - hard))) // 100 * 100)
+        while quantity and (quantity * limit + fee(quantity * limit, cfg, "BUY") > budget or
+                            quantity * (limit - hard) + fee(quantity * limit, cfg, "BUY") + fee(quantity * hard, cfg, "SELL") > risk_budget):
+            quantity -= 100
+        if quantity < 100:
+            event(conn, "PLAN_REJECTED", {"symbol": symbol, "snapshot_id": identity, "reason": "BUDGET_BELOW_MINIMUM"})
+            return {"created": False, "reason": "现金或风险预算不足最小申报量"}
+        from .. import exit_policy as XP
+        from . import rules as RL
+        payload = {"id": plan_id, "snapshot_id": identity, "opportunity_id": row["opportunity_id"],
+                   "symbol": symbol, "name": row["name"], "theme": row["theme"], "route_ids": row["route_ids"],
+                   "book": book, "alpha_scope": scope, "strength_rank": row.get("strength_rank"),
+                   "participation_rank": row.get("participation_rank"), "strength_score": row.get("strength_score"),
+                   "mode": "TREND_PULLBACK", "setup_kind": row["setup_kind"], "entry_day": snap["as_of"],
+                   "lower_cents": low, "limit_cents": limit, "stop_cents": hard, "structure_cents": stop,
+                   "atr_cents": atr, "quantity": quantity, "version": VERSION, "created_at": at,
+                   "knowledge_registry_id": snap["knowledge_registry_id"], "ranking_version": snap["version"],
+                   "knowledge_ids": ["F06-K04", "F10-K04", "F02-K07"], "exit_version": XP.VERSION,
+                   "exit_rules": XP.RULES, "exit_code_hashes": source_fingerprint(),
+                   "first_fraction": .5, "additions_enabled": True, "model": MODEL,
+                   "planned_budget_cents": quantity * limit * 2,
+                   "rule_fingerprint": RL.fingerprint(),
+                   "exit_execution": "收盘识别风险后下个可交易开盘执行；不是盘中止损成交；部分止盈也按下一开盘模拟。"}
+        conn.execute("INSERT INTO paper_plans VALUES (?,?,?,?,?)", (plan_id, identity, row["opportunity_id"], at, store.encoded(payload)))
+        oid = plan_id + ":initial"
+        reserve = quantity * limit + fee(quantity * limit, cfg, "BUY")
+        conn.execute("INSERT INTO paper_orders VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (oid, plan_id, "BUY", quantity, 0, "OPEN", reserve,
+                      quantity * (limit - hard) + fee(quantity * limit, cfg, "BUY") + fee(quantity * hard, cfg, "SELL"),
+                      at, store.encoded({"reason": "INITIAL_HALF_BUDGET", "model": MODEL})))
+        event(conn, "ORDER_APPROVED", {"order_id": oid, "plan": payload, "reserved_cents": reserve})
+        return {"plan_id": plan_id, "order_id": oid, "created": True}
+
+
+def ranking_scope(route_ids):
+    from . import ranking
+    return ranking.alpha_scope(route_ids)
+
+
+def _cancel(conn, oid, reason):
+    conn.execute("UPDATE paper_orders SET status='CANCELLED',reserve_cents=0,risk_cents=0 WHERE id=?", (oid,))
+    event(conn, "ORDER_CANCELLED", {"order_id": oid, "reason": reason})
+
+
+def cancel(oid, db=store.DB_PATH):
+    with database(db) as conn:
+        o = conn.execute("SELECT * FROM paper_orders WHERE id=?", (oid,)).fetchone()
+        if not o or o["side"] != "BUY" or o["status"] not in ACTIVE or o["status"] == "UNKNOWN":
+            raise Conflict("只能取消已知状态的未完成模拟买单；退出任务不可在此取消")
+        _cancel(conn, oid, "USER_CANCELLED")
+    return view(db)
+
+
+def order_band(order_payload, plan):
+    """A conditional add carries its own confirmed band and reference day; the initial uses the plan window."""
+    return (order_payload.get("min_price_cents", plan["lower_cents"]),
+            order_payload.get("max_price_cents", plan["limit_cents"]),
+            order_payload.get("reference_day", plan["entry_day"]))
+
+
+def apply_fill(conn, oid, fill_id, day, quantity, price):
+    """Internal paper adapter only. Callbacks are validated and deduplicated transactionally."""
+    old = conn.execute("SELECT * FROM paper_fills WHERE id=?", (fill_id,)).fetchone()
+    price = cents(price)
+    if old:
+        if (old["order_id"], old["day"], old["quantity"], old["price_cents"]) != (oid, day, quantity, price):
+            raise Conflict("相同成交ID内容冲突")
+        return False
+    account, cfg = _account(conn)
+    o = conn.execute("SELECT * FROM paper_orders WHERE id=?", (oid,)).fetchone()
+    if not o or o["status"] not in ACTIVE or isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0 or quantity > o["quantity"] - o["filled"] or price <= 0:
+        raise ValueError("成交数量或订单状态无效")
+    if day < o["created_at"][:10]:
+        raise ValueError("成交不能早于委托")
+    plan = json.loads(conn.execute("SELECT payload FROM paper_plans WHERE id=?", (o["plan_id"],)).fetchone()[0])
+    notional = quantity * price
+    charge = fee(notional, cfg, o["side"])
+    if o["side"] == "BUY":
+        low, high, _ = order_band(json.loads(o["payload"]), plan)
+        if quantity % 100 or price > high or price < low:
+            raise ValueError("买入成交违反冻结价格/数量限制")
+        other_reserve = sum(r[0] for r in conn.execute("SELECT reserve_cents FROM paper_orders WHERE id<>?", (oid,)))
+        if notional + charge > account["cash_cents"] - other_reserve:
+            raise Conflict("成交超过可用资金")
+        delta = -notional - charge
+    else:
+        lots = list(conn.execute("SELECT * FROM paper_lots WHERE plan_id=? AND remaining>0 AND entry_day<? ORDER BY entry_day,id", (o["plan_id"], day)))
+        if sum(r["remaining"] for r in lots) < quantity:
+            raise Conflict("可售不足或T+1限制")
+        delta = notional - charge
+        remaining = quantity
+        for lot in lots:
+            used = min(remaining, lot["remaining"])
+            conn.execute("UPDATE paper_lots SET remaining=remaining-? WHERE id=?", (used, lot["id"]))
+            remaining -= used
+            if not remaining:
+                break
+    conn.execute("INSERT INTO paper_fills VALUES (?,?,?,?,?,?)", (fill_id, oid, day, quantity, price, charge))
+    if o["side"] == "BUY":
+        conn.execute("INSERT INTO paper_lots VALUES (?,?,?,?,?,?,?,?)",
+                     (fill_id, o["plan_id"], plan["symbol"], day, quantity, quantity, price, charge))
+    filled = o["filled"] + quantity
+    left = o["quantity"] - filled
+    cap = order_band(json.loads(o["payload"]), plan)[1] if o["side"] == "BUY" else plan["limit_cents"]
+    reserve = left * cap + fee(left * cap, cfg, "BUY") if left and o["side"] == "BUY" else 0
+    risk = left * (cap - plan["stop_cents"]) + fee(left * cap, cfg, "BUY") + fee(left * plan["stop_cents"], cfg, "SELL") if reserve else 0
+    if reserve > account["cash_cents"] + delta - (other_reserve if o["side"] == "BUY" else 0):
+        raise Conflict("部分成交后的最低手续费导致剩余预留不足")
+    conn.execute("UPDATE paper_account SET cash_cents=cash_cents+? WHERE id=1", (delta,))
+    conn.execute("UPDATE paper_orders SET filled=?,status=?,reserve_cents=?,risk_cents=? WHERE id=?",
+                 (filled, "FILLED" if left == 0 else "PARTIAL", reserve, risk, oid))
+    event(conn, "FILL", {"fill_id": fill_id, "order_id": oid, "day": day, "quantity": quantity, "price_cents": price, "fee_cents": charge})
+    return True
+
+
+def queue_exit(conn, plan_id, day, reason, fraction=1.):
+    existing = conn.execute("SELECT * FROM paper_orders WHERE plan_id=? AND side='SELL' AND status IN ('OPEN','PARTIAL','UNKNOWN','EXIT_BLOCKED')", (plan_id,)).fetchall()
+    lots = list(conn.execute("SELECT remaining FROM paper_lots WHERE plan_id=?", (plan_id,)))
+    total = sum(r[0] for r in lots)
+    if existing:
+        if fraction < 1 or any(x["status"] == "UNKNOWN" for x in existing) or sum(x["quantity"] - x["filled"] for x in existing) >= total:
+            return
+        for o in existing:
+            _cancel(conn, o["id"], "ESCALATE_TO_FULL_EXIT")
+    qty = total
+    if fraction < 1:
+        qty = int(qty * fraction) // 100 * 100
+    if qty <= 0:
+        return
+    oid = f"{plan_id}:exit:{day}:{reason}"
+    if conn.execute("SELECT 1 FROM paper_orders WHERE id=?", (oid,)).fetchone():
+        return
+    conn.execute("INSERT INTO paper_orders VALUES (?,?,?,?,?,?,?,?,?,?)",
+                 (oid, plan_id, "SELL", qty, 0, "OPEN", 0, 0, day + "T15:00:00+08:00", store.encoded({"reason": reason})))
+    event(conn, "EXIT_REQUIRED", {"order_id": oid, "reason": reason, "quantity": qty})
+
+
+def process_open(conn, day, bars):
+    _, cfg = _account(conn)
+    for o in conn.execute("SELECT o.*,p.payload AS plan FROM paper_orders o JOIN paper_plans p ON p.id=o.plan_id WHERE o.status IN ('OPEN','PARTIAL','EXIT_BLOCKED') ORDER BY o.side DESC,o.created_at,o.id").fetchall():
+        if o["created_at"] >= day + "T09:30:00+08:00":
+            continue
+        fill_id = store.digest([o["id"], day, MODEL])
+        if conn.execute("SELECT 1 FROM paper_fills WHERE id=?", (fill_id,)).fetchone():
+            continue
+        p = json.loads(o["plan"])
+        bar = bars.get(p["symbol"], {})
+        if p["exit_code_hashes"] != source_fingerprint() and o["side"] == "BUY":
+            _cancel(conn, o["id"], "FROZEN_RULE_MISMATCH")
+            continue
+        if bar.get("date") != day or not bar.get("raw_verified"):
+            if o["side"] == "SELL":
+                conn.execute("UPDATE paper_orders SET status='EXIT_BLOCKED' WHERE id=?", (o["id"],))
+            event(conn, "DATA_WAIT", {"order_id": o["id"], "day": day, "reason": "NO_VERIFIED_BAR"})
+            continue
+        op, pre = cents(bar["open"]), cents(bar["preclose"])
+        # First deployment is ordinary main-board paper only. Unknown security status blocks matching.
+        blocked = not bar.get("ordinary_mainboard") or bar.get("corporate_action") or not pre > 0
+        at_limit = op >= round(pre * 1.1) - 1 if o["side"] == "BUY" else op <= round(pre * .9) + 1
+        if blocked or at_limit:
+            if o["side"] == "BUY":
+                _cancel(conn, o["id"], "SECURITY_OR_LIMIT_NOT_FILLABLE")
+            else:
+                conn.execute("UPDATE paper_orders SET status='EXIT_BLOCKED' WHERE id=?", (o["id"],))
+                event(conn, "EXIT_BLOCKED", {"order_id": o["id"], "day": day, "reason": "SECURITY_OR_LIMIT"})
+            continue
+        low, high, reference = order_band(json.loads(o["payload"]), p)
+        if o["side"] == "BUY" and (paper_day_gap(o["created_at"], day) > 7 or bar.get("previous_market_day") != reference):
+            _cancel(conn, o["id"], "MISSED_NEXT_SESSION_OR_EXPIRED")
+            continue
+        if o["side"] == "BUY" and not low <= op <= high:
+            _cancel(conn, o["id"], "OPEN_OUTSIDE_FROZEN_WINDOW")
+            continue
+        qty = min(o["quantity"] - o["filled"], int(cfg["max_fill_lots"]) * 100)
+        if o["side"] == "SELL":
+            sellable = conn.execute("SELECT COALESCE(SUM(remaining),0) FROM paper_lots WHERE plan_id=? AND entry_day<?", (o["plan_id"], day)).fetchone()[0]
+            qty = min(qty, sellable)
+        if qty:
+            apply_fill(conn, o["id"], fill_id, day, qty, op / 100)
+        if o["side"] == "BUY":
+            left = conn.execute("SELECT status FROM paper_orders WHERE id=?", (o["id"],)).fetchone()[0]
+            if left != "FILLED":
+                _cancel(conn, o["id"], "PAPER_IOC_REMAINDER_CANCELLED")
+
+
+def paper_day_gap(created, day):
+    return (datetime.fromisoformat(day) - datetime.fromisoformat(created[:10])).days
+
+
+def view(db=store.DB_PATH, full=False):
+    with database(db) as conn:
+        raw = conn.execute("SELECT * FROM paper_account").fetchone()
+        result = {"configured": bool(raw), "notice": NOTICE, "version": VERSION, "live_orders_enabled": False,
+                  "orders": [], "positions": [], "fills": [], "events": []}
+        if not raw:
+            return result
+        result["account"] = dict(raw)
+        result["account"]["config"] = json.loads(raw["config"])
+        result["orders"] = [{**dict(o), "payload": json.loads(o["payload"])} for o in conn.execute("SELECT * FROM paper_orders ORDER BY created_at DESC,id")]
+        result["fills"] = [dict(r) for r in conn.execute("SELECT f.*,o.side FROM paper_fills f JOIN paper_orders o ON o.id=f.order_id ORDER BY day DESC,f.rowid DESC")]
+        for p in conn.execute("SELECT * FROM paper_plans ORDER BY created_at DESC"):
+            lots = [dict(r) for r in conn.execute("SELECT * FROM paper_lots WHERE plan_id=?", (p["id"],))]
+            if not lots:
+                continue
+            plan = json.loads(p["payload"])
+            valuation = conn.execute("SELECT payload FROM paper_valuations WHERE plan_id=? ORDER BY as_of DESC,rowid DESC LIMIT 1", (p["id"],)).fetchone()
+            result["positions"].append({"plan": plan, "lots": lots, "remaining": sum(r["remaining"] for r in lots),
+                                        "valuation": json.loads(valuation[0]) if valuation else None})
+        result["events"] = [{**dict(r), "payload": json.loads(r["payload"])} for r in conn.execute("SELECT * FROM paper_events ORDER BY rowid DESC" + ("" if full else " LIMIT 100"))]
+        result["account"]["reserved_cents"] = sum(o["reserve_cents"] for o in result["orders"])
+        result["account"]["available_cents"] = raw["cash_cents"] - result["account"]["reserved_cents"]
+        expected_cash = raw["initial_cents"] + sum((-f["quantity"] * f["price_cents"] if f["side"] == "BUY" else f["quantity"] * f["price_cents"]) - f["fee_cents"] for f in result["fills"])
+        bought = sum(f["quantity"] for f in result["fills"] if f["side"] == "BUY")
+        sold = sum(f["quantity"] for f in result["fills"] if f["side"] == "SELL")
+        quantities_ok = bought - sold == sum(p["remaining"] for p in result["positions"])
+        result["reconciled"] = expected_cash == raw["cash_cents"] and result["account"]["available_cents"] >= 0 and quantities_ok
+        active = [p for p in result["positions"] if p["remaining"]]
+        known = all(p["valuation"] and p["valuation"].get("mark_cents") and p["valuation"]["status"] != "DATA_WAIT" for p in active)
+        result["account"]["equity_cents"] = raw["cash_cents"] + sum(p["valuation"]["mark_cents"] * p["remaining"] for p in active) if known else None
+        return result
+
+====================================================================================================
+FILE: mainwave_engine/trading/ranking.py
+LINES: 171  SHA256[:16]: 178ca1d06fde6773
+SOURCE: D:\AICode\Astock\mainwave_engine\trading\ranking.py
+====================================================================================================
+"""Frozen, explainable ranking baseline, separate from executable permissions."""
+from collections import Counter
+import math
+import pandas as pd
+from . import store
+
+VERSION = "strength_leader_baseline_v1_20260919"
+RULES = {"strength": {"relative_momentum": .5, "drawdown": .25, "efficiency": .25},
+         "min_peer_count": 3, "history_sessions": 61, "evaluation_horizons": [5, 10, 20],
+         "knowledge_ids": ["F06-K02", "F06-K04", "F04-K01", "F04-K04", "F07-K01"],
+         "validation": "FROZEN_UNCALIBRATED_BASELINE", "auto_tuning": False}
+MODE_LABELS = {"TREND_PULLBACK": "趋势回踩", "STRENGTH_CONFIRM": "强势确认", "OVERNIGHT": "尾盘隔夜"}
+
+
+def number(value):
+    try:
+        val = float(value)
+        return val if math.isfinite(val) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def alpha_scope(route_ids):
+    """R3 is a research lead, not a priced alpha: an R3-only candidate never enters strategy statistics."""
+    routes = {r for r in str(route_ids or "").split("|") if r}
+    return "R3_RESEARCH" if routes and routes <= {"R3"} else "PRICE_ALPHA"
+
+
+def prices(path, day):
+    f = pd.read_csv(path)
+    f["date"] = pd.to_datetime(f["date"], errors="raise").dt.strftime("%Y-%m-%d")
+    return f[f.date.le(day)].sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
+
+
+def features(frame, day):
+    f = frame[frame.date.le(day)].tail(80).copy()
+    if len(f) < RULES["history_sessions"] or f.date.iloc[-1] != day:
+        return {"status": "DATA_WAIT"}
+    pct = pd.to_numeric(f.pct_chg, errors="coerce")
+    close = pd.to_numeric(f.close, errors="coerce")
+    volume = number(f.volume.iloc[-1])
+    if not all(math.isfinite(x) for x in pct) or pct.le(-100).any() or not all(math.isfinite(x) for x in close) or close.le(0).any() or volume is None or volume <= 0:
+        return {"status": "DATA_WAIT"}
+    index = (1 + pct / 100).cumprod()
+    latest = f.iloc[-1]
+    width = number(latest.high - latest.low)
+    movement = index.diff().abs().tail(10).sum()
+    turnover = pd.to_numeric(f.turnover, errors="coerce") if "turnover" in f else pd.Series(dtype=float)
+    base = turnover.iloc[-21:-1].median() if len(turnover) else None
+    return store.clean({"status": "READY", "close": float(close.iloc[-1]),
+        "return5": float((index.iloc[-1] / index.iloc[-6] - 1) * 100),
+        "return20": float((index.iloc[-1] / index.iloc[-21] - 1) * 100),
+        "drawdown20": float((index.iloc[-1] / index.tail(20).max() - 1) * 100),
+        "efficiency10": float((index.iloc[-1] - index.iloc[-11]) / movement) if movement else 0.,
+        "close_location": float((latest.close - latest.low) / width) if width and width > 0 else None,
+        "turnover": number(turnover.iloc[-1]) if len(turnover) else None,
+        "relative_turnover": number(turnover.iloc[-1] / base) if base and base > 0 else None,
+        "price_basis": "pct_chg compounded return index; execution uses raw price"})
+
+
+def build(universe, evidence, metrics, benchmark, previous=None, leaders=None):
+    day = universe["as_of"]
+    if evidence.get("as_of") != day or universe.get("summary", {}).get("status") != "SUCCESS":
+        raise ValueError("候选或证据日期/状态不完整")
+    previous = previous or {}
+    # Compare by opportunity, not by symbol: a new cycle must not inherit the old cycle's rank memory.
+    before = {r["opportunity_id"]: r for r in previous.get("records", [])} if previous.get("as_of", day) < day and previous.get("version") == VERSION else {}
+    records = []
+    for item in universe["records"]:
+        symbol = item["symbol"]
+        core = evidence.get("records", {}).get(symbol, {})
+        vector = core.get("state_vector", {})
+        f = metrics.get(symbol, {"status": "DATA_WAIT"})
+        theme = item.get("belonging_theme") or "未归属"
+        cycle = item.get("cycle_id") or item.get("preparation_id") or "unanchored"
+        oid = store.digest([symbol, cycle])[:24]
+        risk = item.get("value_tier") == "RISK_WATCH" or item.get("sell_structure_alert") or any(
+            r.get("code") != "MARKET_CAUTION" for r in vector.get("risk_overlays", []))
+        window = core.get("review_window", {})
+        mode_ready = vector.get("setup_kind") == "FIRST_PULLBACK"
+        # Unknown kinds remain visible and cannot inherit breakout execution permission.
+        blockers = []
+        if f["status"] != "READY" or item.get("price_date") != day or not core:
+            blockers.append("DATA_WAIT")
+        if risk:
+            blockers.append("STRUCTURE_RISK")
+        if not universe.get("market", {}).get("trend_review_allowed") or universe.get("market", {}).get("data_status") != "FRESH":
+            blockers.append("MARKET_WAIT")
+        if not mode_ready or not window.get("active") or not item.get("initial_review"):
+            blockers.append("WAIT_PULLBACK_CONFIRMATION")
+        if item.get("tracking_only"):
+            blockers.append("TRACKING_ONLY")
+        state = ("DATA_WAIT" if "DATA_WAIT" in blockers else "RISK_WATCH" if risk else
+                 "MARKET_WAIT" if "MARKET_WAIT" in blockers else "WAIT_SETUP" if blockers else "PLAN_REVIEW")
+        row = {"opportunity_id": oid, "symbol": symbol, "name": item.get("name", symbol), "theme": theme,
+               "route_ids": item.get("route_ids", ""), "alpha_scope": alpha_scope(item.get("route_ids", "")),
+               "cycle_id": cycle, "setup_kind": vector.get("setup_kind", "UNKNOWN"),
+               "mode": "TREND_PULLBACK", "modes": {"TREND_PULLBACK": state, "STRENGTH_CONFIRM": "OBSERVATION_ONLY",
+                                                     "OVERNIGHT": "OBSERVATION_ONLY"},
+               "state": state, "blockers": blockers, "features": f, "strength_score": None, "momentum_score": None,
+               "role": "UNCONFIRMED", "leadership_confirmed": False, "role_evidence": (leaders or {}).get(symbol, []),
+               "legacy_rank": item.get("value_rank"), "tracking_only": bool(item.get("tracking_only")),
+               "price_date": item.get("price_date"), "window": window, "next_condition": core.get("next_condition", "等待数据"),
+               "evidence": core, "source_record": item, "setup_id": vector.get("setup_id", ""),
+               "previous_rank": before.get(oid, {}).get("strength_rank"),
+               "previous_opportunity_seen": before.get(oid, {}).get("price_date"),
+               "rank_change": None, "ranking_version": VERSION, "paper_plan_eligible": state == "PLAN_REVIEW",
+               "live_orders_enabled": False}
+        records.append(row)
+    valid = [r for r in records if r["features"]["status"] == "READY"]
+    for row in valid:
+        f = row["features"]
+        peers = [r for r in valid if r["theme"] == row["theme"] and r["symbol"] != row["symbol"]]
+        # Exclude the target's own contribution; this is candidate-cohort strength, not a theme index.
+        f["peer_count"] = len(peers)
+        for n in (5, 20):
+            market = number(benchmark.get(f"return{n}"))
+            peer = float(pd.Series([p["features"][f"return{n}"] for p in peers]).median()) if len(peers) >= RULES["min_peer_count"] and row["theme"] != "未归属" else None
+            f[f"market_excess{n}"] = f[f"return{n}"] - market if market is not None else None
+            f[f"peer_excess{n}"] = f[f"return{n}"] - peer if peer is not None else None
+        f["relative_momentum"] = ((f["market_excess5"] + f["market_excess20"]) / 2
+                                  if f["market_excess5"] is not None and f["market_excess20"] is not None else None)
+        if f["relative_momentum"] is None:
+            row["blockers"].append("BENCHMARK_MISSING")
+            row["paper_plan_eligible"] = False
+            row["state"] = row["modes"]["TREND_PULLBACK"] = "DATA_WAIT"
+    eligible = [r for r in valid if r["features"]["relative_momentum"] is not None]
+    # Compare within board volatility groups; small groups are disclosed, never silently called calibrated.
+    groups = {}
+    for r in eligible:
+        board = "STAR" if r["symbol"].startswith("sh_68") else "CHINEXT" if r["symbol"].startswith("sz_30") else "MAIN"
+        groups.setdefault(board, []).append(r)
+    for board, rows in groups.items():
+        frame = pd.DataFrame([r["features"] for r in rows])
+        ranks = frame[["relative_momentum", "drawdown20", "efficiency10"]].rank(pct=True, method="average")
+        for i, r in enumerate(rows):
+            # The percentiles that made the score are saved with it, so an explanation reads them, not a re-derivation.
+            r["score_percentiles"] = {k: round(float(ranks[k].iloc[i]), 6) for k in ("relative_momentum", "drawdown20", "efficiency10")}
+            r["strength_score"] = round(100 * (ranks.relative_momentum.iloc[i] * .5 + ranks.drawdown20.iloc[i] * .25 + ranks.efficiency10.iloc[i] * .25), 2)
+            r["momentum_score"] = round(100 * ranks.relative_momentum.iloc[i], 2)
+            r["comparison_group"] = {"board": board, "count": len(rows), "limited": len(rows) < 20}
+    records.sort(key=lambda r: (r["strength_score"] is None, -(r["strength_score"] or 0), r["symbol"]))
+    for n, r in enumerate(sorted(eligible, key=lambda r: (-(r["momentum_score"] or 0), r["symbol"])), 1):
+        r["momentum_rank"] = n
+    theme_counts = Counter()
+    for n, r in enumerate(records, 1):
+        r["strength_rank"] = n if r["strength_score"] is not None else None
+        if r["strength_rank"] is not None:
+            theme_counts[r["theme"]] += 1
+            r["theme_strength_rank"] = theme_counts[r["theme"]]
+            if r["role_evidence"]:
+                r["role"] = "DAILY_LEADER_CANDIDATE"
+            elif theme_counts[r["theme"]] <= 3:
+                r["role"] = "RELATIVE_STRENGTH_FRONT"
+            if r["previous_rank"] is not None:
+                r["rank_change"] = r["previous_rank"] - n
+        r["rank_reason"] = {"components": {k: r["features"].get(k) for k in ("relative_momentum", "drawdown20", "efficiency10")},
+                            "current_blockers": r["blockers"], "previous_date": previous.get("as_of"),
+                            "cohort_changed": set(before) != {x["opportunity_id"] for x in records}}
+    order = {"PLAN_REVIEW": 0, "MARKET_WAIT": 1, "WAIT_SETUP": 2, "RISK_WATCH": 3, "DATA_WAIT": 4}
+    participation = sorted(records, key=lambda r: (order[r["state"]], r["tracking_only"], r["strength_score"] is None,
+        abs(number(r["source_record"].get("route_bias_atr")) or 0) > 2,
+        -(r["strength_score"] or 0), r["symbol"]))
+    for n, row in enumerate(participation, 1):
+        row["participation_rank"] = n
+    return {"as_of": day, "version": VERSION, "rules": RULES, "market": universe.get("market", {}),
+            "observation_basis": "DATED_SOURCE_RECONSTRUCTION_NOT_PROOF_OF_LIVE_DISCOVERY",
+            "scope": "已分析候选与续踪合并域，不是全市场龙头普查；日级角色线索不证明因果带动。",
+            "summary": {"total": len(records), "rankable": len(eligible), "states": dict(Counter(r["state"] for r in records)),
+                        "paper_plan_eligible": sum(r["paper_plan_eligible"] for r in records)},
+            "records": records, "live_orders_enabled": False}
+
+====================================================================================================
+FILE: mainwave_engine/trading/ranking_shadow.py
+LINES: 373  SHA256[:16]: 719cd797a45654a3
+SOURCE: D:\AICode\Astock\mainwave_engine\trading\ranking_shadow.py
+====================================================================================================
+"""Shadow screening: the same closure records read in layers instead of one blended score.
+
+The frozen rule (ranking.py) averages relative momentum, drawdown and efficiency, all of which reward a
+stock that has already run. This module keeps the readings apart and orders candidates by a stated
+lexicographic policy rather than by weights. A lexicographic order is still a policy: each earlier layer
+overrides every later one, and that choice is written down here, not hidden in a weight.
+
+v2 (2026-09-23, after the independent audit): route order only with event dates; change read from
+structured fields, never from prose; re-eligibility tied to the batch date; REBUILDING kept apart from
+FAILED; the cohort theme reading named for what it is (candidate cohort, not the market); a separate
+market theme context from the full-membership theme facts; every count taken before any truncation;
+the shortlist renamed for what it is. Shadow only: it never changes ranking.py's output, states or
+permissions, and it holds no order authority."""
+from collections import Counter
+import statistics
+
+from . import ranking
+
+VERSION = "screening_shadow_v2_20260923"
+EARLY = {"PROBED", "ABSORBING", "COILED", "ARMED", "READY", "IGNITION"}
+CONTINUATION = {"MARKUP", "PULLBACK"}
+LATE = {"OVERHEATED", "DISTRIBUTION_RISK"}
+REPAIRING = {"REBUILDING"}
+FAILED = {"FAILED"}
+LIVE_PREPARATION = {"EVIDENCE_STRONG", "ADVANCING", "ACCEPTED", "OBSERVING", "ATTEMPT"}
+STATE_ORDER = {"PLAN_REVIEW": 0, "MARKET_WAIT": 1, "WAIT_SETUP": 2, "RISK_WATCH": 3, "DATA_WAIT": 4}
+STAGE_ORDER = {"EARLY": 0, "CONTINUATION": 1, "UNKNOWN": 2, "REPAIRING": 3, "LATE": 4, "FAILED": 5}
+MAINLINE_ORDER = {"STRONG": 0, "NEUTRAL": 1, "UNKNOWN": 1, "WEAK": 2}
+ROUTE_ORDER = {"R2_THEN_R1": 0, "R1": 1, "R1_AND_R2_UNORDERED": 1, "R2": 2, "R3": 3, "NONE": 4}
+POSITION_ORDER = {"IN_BAND": 0, "UNKNOWN": 1, "EXTENDED": 2}
+TRIGGER_ORDER = {"ABSORBED": 0, "NEUTRAL": 1, "WEAK_ACTIVE": 2}
+CHANGE_ORDER = {"IMPROVING": 0, "PROGRESSING": 0, "UNCHANGED": 1, "NEW": 1, "UNKNOWN": 1, "WEAKENING": 2}
+THRESHOLDS = {"extended_bias_atr": 2.0, "in_band_bias_low": -1.0, "strong_close": 0.6, "weak_close": 0.3,
+              "absorb_turnover": 1.0, "weak_active_turnover": 1.5, "cohort_min_members": 3, "cohort_top": 3,
+              "market_theme_top": 5, "market_breadth_strong": 0.6}
+VARIANTS = ("V0_frozen", "V1_tracking", "V2_position", "V3_stage_route", "V4_multiday")
+LABELS = {"stage": {"EARLY": "早期/刚启动", "CONTINUATION": "延续中", "UNKNOWN": "阶段未知", "REPAIRING": "失效后修复观察",
+                    "LATE": "过热/派发风险", "FAILED": "本轮结构失效"},
+          "mainline": {"STRONG": "候选群体较强", "NEUTRAL": "候选群体中性", "UNKNOWN": "候选群体样本不足", "WEAK": "候选群体较弱"},
+          "market_theme": {"STRONG": "全市场题材活跃", "NEUTRAL": "全市场题材中性", "UNKNOWN": "全市场题材无当日表", "WEAK": "全市场题材偏弱"},
+          "position": {"IN_BAND": "结构带内", "UNKNOWN": "位置未知", "EXTENDED": "偏离过大"},
+          "trigger": {"ABSORBED": "强收盘且有承接", "NEUTRAL": "无明确触发", "WEAK_ACTIVE": "放量弱收盘"},
+          "route": {"R2_THEN_R1": "先准备后点火（有日期）", "R1": "点火确认", "R1_AND_R2_UNORDERED": "点火与准备并存（先后未证）",
+                    "R2": "先行准备", "R3": "题材传播", "NONE": "无当前路径"},
+          "change": {"IMPROVING": "证据改善", "PROGRESSING": "阶段推进", "UNCHANGED": "证据延续", "NEW": "首份证据",
+                     "UNKNOWN": "变化未知", "WEAKENING": "证据减弱"}}
+
+number = ranking.number
+
+
+# ---------------------------------------------------------------- theme readings
+def theme_cohorts(records):
+    """Reading of the candidate cohort itself: are the candidates in this theme still being pushed today?
+
+    The cohort is already a filtered, self-referential sample; the result is named STRONG/WEAK for the cohort
+    and never presented as the market's main line. Conditions are checked first, the top-N cut comes last."""
+    groups = {}
+    for r in records:
+        f = r.get("features") or {}
+        if f.get("status") != "READY" or r.get("theme") in (None, "", "未归属"):
+            continue
+        groups.setdefault(r["theme"], []).append(r)
+    out = {}
+    for theme, rows in groups.items():
+        ex5 = [v for v in (number(x["features"].get("market_excess5")) for x in rows) if v is not None]
+        strong = sum(1 for x in rows if trigger_of(x["features"]) == "ABSORBED")
+        weak = sum(1 for x in rows if trigger_of(x["features"]) == "WEAK_ACTIVE")
+        pushing = sum(1 for x in rows if stage_of(x)[0] in ("EARLY", "CONTINUATION"))
+        n = len(rows)
+        known = n >= THRESHOLDS["cohort_min_members"] and bool(ex5)
+        med = round(statistics.median(ex5), 2) if ex5 else None
+        out[theme] = {"state": "UNKNOWN" if not known else "NEUTRAL", "members": n, "median_excess5": med,
+                      "strong_close": strong, "weak_active": weak, "pushing": pushing,
+                      "qualifies_strong": known and med > 0 and strong >= 2 and pushing >= 2,
+                      "qualifies_weak": known and med < 0 and weak * 2 >= n,
+                      "basis": "CANDIDATE_COHORT_ONLY_NOT_MARKET_BREADTH"}
+    strong_pool = sorted((t for t, c in out.items() if c["qualifies_strong"]), key=lambda t: -out[t]["median_excess5"])
+    for theme in strong_pool[:THRESHOLDS["cohort_top"]]:
+        out[theme]["state"] = "STRONG"
+    weak_pool = sorted((t for t, c in out.items() if c["qualifies_weak"] and c["state"] != "STRONG"), key=lambda t: out[t]["median_excess5"])
+    for theme in weak_pool[:THRESHOLDS["cohort_top"]]:
+        out[theme]["state"] = "WEAK"
+    return out
+
+
+def market_theme_context(theme_facts):
+    """Full-membership theme facts (eod_review) by theme name: breadth, limit-ups, table ranks. Dated by the facts."""
+    if not theme_facts:
+        return {}
+    out = {}
+    for key in ("top_by_limit_up", "top_by_limit_share", "top_by_amount_share", "chains"):
+        for n, t in enumerate(theme_facts.get(key) or [], 1):
+            name = t.get("theme")
+            if not name:
+                continue
+            entry = out.setdefault(name, {"members": t.get("members"), "limit_up": t.get("limit_up"), "up": t.get("up"),
+                                          "breadth": (t.get("breadth") or {}).get("value"), "ranks": {}, "as_of": theme_facts.get("as_of")})
+            entry["ranks"][key] = n
+    top = THRESHOLDS["market_theme_top"]
+    for name, e in out.items():
+        breadth = e["breadth"] if e["breadth"] is not None else 0.0
+        listed_top = any(rank <= top for k, rank in e["ranks"].items() if k in ("top_by_limit_up", "top_by_limit_share"))
+        e["state"] = ("STRONG" if listed_top and breadth >= THRESHOLDS["market_breadth_strong"]
+                      else "WEAK" if breadth < 0.4 and (e["limit_up"] or 0) == 0 else "NEUTRAL")
+    return out
+
+
+# ---------------------------------------------------------------- per-record readings
+def trigger_of(f):
+    close_location, rel = number(f.get("close_location")), number(f.get("relative_turnover"))
+    if close_location is None or rel is None:
+        return "NEUTRAL"
+    if close_location >= THRESHOLDS["strong_close"] and rel >= THRESHOLDS["absorb_turnover"]:
+        return "ABSORBED"
+    if close_location <= THRESHOLDS["weak_close"] and rel >= THRESHOLDS["weak_active_turnover"]:
+        return "WEAK_ACTIVE"
+    return "NEUTRAL"
+
+
+def position_of(record):
+    src = record.get("source_record") or {}
+    sv = (record.get("evidence") or {}).get("state_vector") or {}
+    bias = number(src.get("route_bias_atr"))
+    if bias is None:
+        bias = number(((record.get("evidence") or {}).get("route_evidence") or {}).get("bias_atr"))
+    if sv.get("location") == "EXTENDED" or (bias is not None and bias > THRESHOLDS["extended_bias_atr"]):
+        return "EXTENDED", bias
+    if sv.get("location") == "IN_BAND" or (bias is not None and THRESHOLDS["in_band_bias_low"] <= bias <= THRESHOLDS["extended_bias_atr"]):
+        return "IN_BAND", bias
+    return "UNKNOWN", bias
+
+
+def stage_of(record):
+    sv = (record.get("evidence") or {}).get("state_vector") or {}
+    stage = sv.get("stage")
+    if stage in EARLY:
+        return "EARLY", stage
+    if stage in CONTINUATION:
+        # A confirmed or forming first pullback right after the start still counts as early participation.
+        if sv.get("setup_status") in ("CONFIRMED", "FORMING") and (record.get("source_record") or {}).get("local_role") in ("FIRST_RETEST", "ORIGIN_BREAKOUT"):
+            return "EARLY", stage
+        return "CONTINUATION", stage
+    if stage in LATE:
+        return "LATE", stage
+    if stage in REPAIRING:
+        return "REPAIRING", stage
+    if stage in FAILED:
+        return "FAILED", stage
+    return "UNKNOWN", stage
+
+
+def route_of(record):
+    """Ordered 'prepared then ignited' only when the preparation date is known to precede the attempt date."""
+    routes = {x for x in str(record.get("route_ids") or "").split("|") if x}
+    re_ = (record.get("evidence") or {}).get("route_evidence") or {}
+    if "R1" in routes and ("R2" in routes or re_.get("prepared_before_attempt")):
+        prepared_at = re_.get("prepared_at") or re_.get("preparation_first_seen") or ""
+        attempt_at = re_.get("attempt_at") or ""
+        if re_.get("prepared_before_attempt") is True or (prepared_at and attempt_at and prepared_at < attempt_at):
+            return "R2_THEN_R1"
+        return "R1_AND_R2_UNORDERED"
+    for r in ("R1", "R2", "R3"):
+        if r in routes:
+            return r
+    return "NONE"
+
+
+def preparation_of(record):
+    re_ = (record.get("evidence") or {}).get("route_evidence") or {}
+    state = re_.get("preparation_state") or (record.get("source_record") or {}).get("preparation_state") or ""
+    return {"state": state, "live": state in LIVE_PREPARATION, "demand": bool(re_.get("demand")),
+            "activity_contraction": bool(re_.get("activity_contraction")), "age": number(re_.get("preparation_age")),
+            "prepared_at": re_.get("prepared_at") or re_.get("preparation_first_seen") or "", "attempt_at": re_.get("attempt_at") or ""}
+
+
+def stage_transition(before, now):
+    """Lifecycle movement is not a strength order: EARLY→CONTINUATION is progress, anything into LATE/FAILED is weakening,
+    out of FAILED/REPAIRING into EARLY is a new event."""
+    if before == now:
+        return "UNCHANGED"
+    if now in ("LATE", "FAILED"):
+        return "WEAKENING"
+    if before in ("FAILED", "REPAIRING") and now in ("EARLY", "CONTINUATION"):
+        return "NEW"
+    if before == "EARLY" and now == "CONTINUATION":
+        return "PROGRESSING"
+    if before in ("LATE", "REPAIRING") and now in ("EARLY", "CONTINUATION"):
+        return "IMPROVING"
+    if before == "CONTINUATION" and now == "EARLY":
+        return "IMPROVING"
+    return "UNCHANGED"
+
+
+def change_of(current, previous):
+    """Change from structured fields of the previous shadow row; without one, from the engine's evidence_change only
+    when the sentence is unambiguous (a negated '改善' is not an improvement)."""
+    if previous and previous.get("stage_bucket"):
+        moves = [stage_transition(previous["stage_bucket"], current["stage_bucket"])]
+        if previous.get("position") != current["position"]:
+            moves.append("WEAKENING" if current["position"] == "EXTENDED" else "IMPROVING" if current["position"] == "IN_BAND" else "UNCHANGED")
+        if previous.get("trigger") != current["trigger"]:
+            moves.append("IMPROVING" if current["trigger"] == "ABSORBED" else "WEAKENING" if current["trigger"] == "WEAK_ACTIVE" else "UNCHANGED")
+        prev_live = (previous.get("preparation") or {}).get("live")
+        if prev_live is not None and prev_live != current["preparation"]["live"]:
+            moves.append("IMPROVING" if current["preparation"]["live"] else "WEAKENING")
+        if "NEW" in moves:
+            return "NEW"
+        if "WEAKENING" in moves:
+            return "WEAKENING"
+        if "IMPROVING" in moves:
+            return "IMPROVING"
+        if "PROGRESSING" in moves:
+            return "PROGRESSING"
+        return "UNCHANGED"
+    text = str((current.get("_source") or {}).get("evidence_change") or "")
+    if not text:
+        return "UNKNOWN"
+    if "新周期" in text or "首份" in text:
+        return "NEW"
+    negated = any(w in text for w in ("未改善", "无改善", "没有改善", "不改善"))
+    weak = any(w in text for w in ("减弱", "消退", "退化", "恶化", "失效"))
+    better = "改善" in text and not negated
+    if better and not weak:
+        return "IMPROVING"
+    if weak and not better:
+        return "WEAKENING"
+    return "UNCHANGED" if ("延续" in text or "无新增" in text) else "UNKNOWN"
+
+
+def re_eligible(record, as_of):
+    """A continued-tracking name competes again only when its price and evidence carry the batch date and a structure
+    is live. Re-entry to observation is not a trading permission; the frozen blockers except TRACKING_ONLY stay."""
+    if not record.get("tracking_only") or not as_of:
+        return False
+    f = record.get("features") or {}
+    sv = (record.get("evidence") or {}).get("state_vector") or {}
+    src = record.get("source_record") or {}
+    fresh = f.get("status") == "READY" and record.get("price_date") == as_of and (record.get("evidence") or {}).get("as_of") == as_of
+    live = sv.get("setup_status") in ("CONFIRMED", "FORMING") or src.get("route_status") in ("CONFIRMATION_REVIEW", "PREPARATION_WATCH")
+    return bool(fresh and live and "STRUCTURE_RISK" not in record.get("blockers", []))
+
+
+def state_without(record, dropped):
+    blockers = [b for b in record.get("blockers", []) if b not in dropped]
+    if "DATA_WAIT" in blockers or "BENCHMARK_MISSING" in blockers:
+        return "DATA_WAIT", blockers
+    if "STRUCTURE_RISK" in blockers:
+        return "RISK_WATCH", blockers
+    if "MARKET_WAIT" in blockers:
+        return "MARKET_WAIT", blockers
+    return ("WAIT_SETUP" if blockers else "PLAN_REVIEW"), blockers
+
+
+def read(record, cohorts, market_themes, previous=None, as_of=None):
+    f = record.get("features") or {}
+    stage_bucket, stage = stage_of(record)
+    position, bias = position_of(record)
+    prep = preparation_of(record)
+    cohort = cohorts.get(record.get("theme"), {"state": "UNKNOWN", "members": 0})
+    market = market_themes.get(record.get("theme"), {"state": "UNKNOWN"})
+    trigger = trigger_of(f)
+    eligible_again = re_eligible(record, as_of)
+    state_v1, blockers_v1 = state_without(record, {"TRACKING_ONLY"} if eligible_again else set())
+    row = {"opportunity_id": record["opportunity_id"], "symbol": record["symbol"], "name": record.get("name"), "theme": record.get("theme"),
+           "frozen_state": record.get("state"), "frozen_strength_rank": record.get("strength_rank"), "frozen_participation_rank": record.get("participation_rank"),
+           "state": state_v1, "blockers": blockers_v1, "re_eligible": eligible_again, "tracking_only": bool(record.get("tracking_only")),
+           "stage_bucket": stage_bucket, "stage": stage, "position": position, "bias_atr": round(bias, 3) if bias is not None else None,
+           "route": route_of(record), "route_ids": record.get("route_ids", ""), "preparation": prep, "trigger": trigger,
+           "close_location": number(f.get("close_location")), "relative_turnover": number(f.get("relative_turnover")),
+           "trend": {"market_excess5": number(f.get("market_excess5")), "market_excess20": number(f.get("market_excess20")),
+                     "peer_excess20": number(f.get("peer_excess20")), "peer_count": f.get("peer_count"), "return20": number(f.get("return20")),
+                     "drawdown20": number(f.get("drawdown20"))},
+           "mainline": cohort["state"], "theme_cohort": cohort, "market_theme": market.get("state", "UNKNOWN"), "market_theme_context": market,
+           "previous_shadow_rank": (previous or {}).get("shadow_rank"), "alpha_scope": record.get("alpha_scope"),
+           "_source": record.get("source_record") or {}}
+    row["change"] = change_of(row, previous)
+    row.pop("_source")
+    return row
+
+
+def mainline_key(row):
+    """Market breadth decides when a same-day table exists for the theme; otherwise the cohort reading."""
+    if row.get("market_theme") in ("STRONG", "WEAK"):
+        return MAINLINE_ORDER[row["market_theme"]]
+    return MAINLINE_ORDER.get(row["mainline"], 1)
+
+
+def keys(row):
+    """Lexicographic keys for each ablation step; lower sorts first. No weights, no blended score. The order is a
+    policy: state gate → position (extension is never outranked) → stage → theme → route → preparation → change →
+    trigger → trend as the tie-break."""
+    trend = -(row["trend"]["market_excess20"] if row["trend"]["market_excess20"] is not None else -999)
+    frozen = (row["frozen_participation_rank"] if row["frozen_participation_rank"] is not None else 10 ** 6)
+    base = (STATE_ORDER.get(row["state"], 9), row["alpha_scope"] == "R3_RESEARCH")
+    position = (POSITION_ORDER[row["position"]],)
+    trigger = (TRIGGER_ORDER[row["trigger"]],)
+    stage_route = (STAGE_ORDER[row["stage_bucket"]], mainline_key(row), ROUTE_ORDER[row["route"]], 0 if row["preparation"]["live"] else 1)
+    return {"V0_frozen": (frozen, row["symbol"]),
+            "V1_tracking": (*base, frozen, row["symbol"]),
+            "V2_position": (*base, *position, *trigger, trend, row["symbol"]),
+            "V3_stage_route": (*base, *position, *stage_route, *trigger, trend, row["symbol"]),
+            "V4_multiday": (*base, *position, *stage_route, CHANGE_ORDER[row["change"]], *trigger, trend, row["symbol"])}
+
+
+def select_review_shortlist(rows, limit=2):
+    """Names worth the next unit of review attention: at most `limit`, one per security, distinct themes,
+    never extended, late or failed, never R3-only. It is not an allocation: it checks no holdings, orders,
+    cash, ETF seat or account, and it grants nothing (see trading.allocation.allocate_ready_plans)."""
+    chosen, seen = [], set()
+    for row in rows:
+        if len(chosen) >= limit:
+            break
+        if row["state"] not in ("PLAN_REVIEW", "WAIT_SETUP") or row["symbol"] in seen:
+            continue
+        if row["position"] != "IN_BAND" or row["stage_bucket"] in ("LATE", "FAILED", "REPAIRING") or row["alpha_scope"] == "R3_RESEARCH":
+            continue
+        if any(c["theme"] == row["theme"] and row["theme"] not in ("", "未归属") for c in chosen):
+            continue
+        chosen.append(row)
+        seen.add(row["symbol"])
+    return chosen
+
+
+def watch_reconciliation(rows, preparation_watch):
+    """Every count before any truncation: candidates, watch, overlap, outside, union."""
+    known = {r["symbol"] for r in rows}
+    watch_symbols = [w.get("symbol") for w in (preparation_watch or []) if w.get("symbol")]
+    outside = [w for w in (preparation_watch or []) if w.get("symbol") and w["symbol"] not in known]
+    return {"candidates": len(known), "watch": len(set(watch_symbols)), "overlap": len(known & set(watch_symbols)),
+            "outside": len({w["symbol"] for w in outside}), "union": len(known | set(watch_symbols)),
+            "note": "低偏离准备观察（影子）：域外名单进入待取证机会层，不进候选状态，无冻结触发价与失效价"}, outside
+
+
+def evaluate(payload, previous=None, preparation_watch=None, theme_facts=None):
+    as_of = payload.get("as_of")
+    records = payload.get("records", [])
+    cohorts = theme_cohorts(records)
+    market_themes = market_theme_context(theme_facts)
+    before = {r["opportunity_id"]: r for r in (previous or {}).get("rows", [])} if previous and previous.get("as_of", "") < (as_of or "") else {}
+    rows = [read(r, cohorts, market_themes, before.get(r["opportunity_id"]), as_of) for r in records]
+    for row in rows:
+        row["keys"] = keys(row)
+    for variant in VARIANTS:
+        for n, row in enumerate(sorted(rows, key=lambda r: r["keys"][variant]), 1):
+            row.setdefault("variant_ranks", {})[variant] = n
+    for row in rows:
+        row["shadow_rank"] = row["variant_ranks"]["V4_multiday"]
+        theme_text = LABELS["mainline"][row["mainline"]] + ("／" + LABELS["market_theme"][row["market_theme"]] if row["market_theme"] != "UNKNOWN" else "")
+        row["reading"] = "；".join([LABELS["stage"][row["stage_bucket"]] + (f"（{row['stage']}）" if row["stage"] else ""), theme_text,
+                                   LABELS["route"][row["route"]], LABELS["position"][row["position"]] + (f"（{row['bias_atr']:+.1f}ATR）" if row["bias_atr"] is not None else ""),
+                                   LABELS["trigger"][row["trigger"]], LABELS["change"][row["change"]]])
+        row.pop("keys")
+    rows.sort(key=lambda r: r["shadow_rank"])
+    shortlist = select_review_shortlist(rows)
+    top_frozen = {r["symbol"] for r in rows if r["frozen_participation_rank"] is not None and r["frozen_participation_rank"] <= 10}
+    top_shadow = {r["symbol"] for r in rows[:10]}
+    reconciliation, outside = watch_reconciliation(rows, preparation_watch)
+    summary = {"total": len(rows), "re_eligible": sum(r["re_eligible"] for r in rows),
+               "states": dict(Counter(r["state"] for r in rows)), "frozen_states": dict(Counter(r["frozen_state"] for r in rows)),
+               "stage_buckets": dict(Counter(r["stage_bucket"] for r in rows)), "positions": dict(Counter(r["position"] for r in rows)),
+               "cohort_states": dict(Counter(r["mainline"] for r in rows)), "market_theme_states": dict(Counter(r["market_theme"] for r in rows)),
+               "cohort_strong": sorted(t for t, c in cohorts.items() if c["state"] == "STRONG"),
+               "cohort_weak": sorted(t for t, c in cohorts.items() if c["state"] == "WEAK"),
+               "market_themes_strong": sorted(t for t, c in market_themes.items() if c.get("state") == "STRONG"),
+               "top10_overlap_with_frozen": len(top_frozen & top_shadow),
+               "review_shortlist": [{k: r[k] for k in ("symbol", "name", "theme", "state", "reading")} for r in shortlist],
+               "top10": [{k: r[k] for k in ("symbol", "name", "theme", "state", "frozen_participation_rank", "reading")} for r in rows[:10]],
+               "preparation_watch": reconciliation}
+    return {"version": VERSION, "as_of": as_of, "snapshot_id": payload.get("snapshot_id"), "thresholds": THRESHOLDS,
+            "preparation_watch_outside": outside[:20], "preparation_watch_outside_total": reconciliation["outside"],
+            "order": "state → position(不追高，作为本政策的偏好写明) → stage → theme(市场表优先，否则候选群体) → route → preparation → change → trigger → trend(tie)；无加权总分",
+            "basis": "SHADOW_ONLY_NOT_CALIBRATED_NO_ORDERS", "cohorts": cohorts, "market_themes": market_themes,
+            "summary": summary, "rows": rows}
+
+====================================================================================================
+FILE: mainwave_engine/trading/allocation.py
+LINES: 109  SHA256[:16]: 3494fd54ed4bbb1a
+SOURCE: D:\AICode\Astock\mainwave_engine\trading\allocation.py
+====================================================================================================
+"""Account protocols and the allocation step: which approved, valid plans may occupy the next unit of money.
+
+Two accounts are named. AUTO100W is the existing mechanical paper book (capital 1,000,000, its own rule).
+NEW100K_PAPER is the compounding account the master plan asks for, active from 2026-09-24 under protocol
+new100k_protocol_v1_20260923 (the same numbers the NEW100K ledger is initialised with). An account whose risk
+profile has any unset field is CONFIG_PENDING and nothing is allocated to it. Seats: at most 2 stock securities
+and 1 ETF, counted by security across holdings, pending buy orders and new allocations; the same security through
+several routes is one seat. No order is created here."""
+VERSION = "allocation_v1_20260923"
+CONFIG_PENDING = "CONFIG_PENDING"
+ACCOUNTS = {
+    "AUTO100W": {"account_id": "AUTO100W", "run_mode": "PAPER", "capital": 1000000, "status": "ACTIVE", "seats": {"stock": 3, "etf": 0},
+                 "risk_profile": {"single_risk_pct": 1.0, "total_risk_pct": 3.0, "symbol_cap_pct": 20.0, "theme_cap_pct": 40.0, "gross_cap_pct": 80.0},
+                 "note": "旧自动账：参与榜前 3、趋势回踩、机械规则；成绩与新账不合并"},
+    "NEW100K_PAPER": {"account_id": "NEW100K_PAPER", "run_mode": "PAPER", "capital": 100000, "status": "ACTIVE", "seats": {"stock": 2, "etf": 1},
+                      "effective_at": "2026-09-24", "approved_equity_ceiling": 100000,
+                      "risk_profile": {"single_risk_pct": 1.0, "total_risk_pct": 3.0, "symbol_cap_pct": 35.0, "etf_cap_pct": 30.0,
+                                       "theme_cap_pct": 50.0, "gross_cap_pct": 90.0, "max_drawdown_pct": 10.0},
+                      "note": "10 万元复利虚拟账（协议 new100k_protocol_v1_20260923，与 books.NEW100K_ACCOUNT 一致）；1000 倍目标不进入任何参数"},
+}
+
+
+def risk_base(current_verified_equity, approved_equity_ceiling):
+    """Fixed risk percentages apply to the smaller of verified equity and the approved ceiling: losses shrink the base
+    at once, gains widen it only after the ceiling is raised by review."""
+    if current_verified_equity is None:
+        return None
+    return min(current_verified_equity, approved_equity_ceiling) if approved_equity_ceiling else current_verified_equity
+
+
+def _is_etf(symbol):
+    return str(symbol).startswith(("sh_51", "sh_56", "sh_58", "sz_15", "sz_16"))
+
+
+def plan_valid(plan, target_date):
+    """Approved, has every required field, and its effective window covers the target session."""
+    required = ("plan_id", "account_id", "symbol", "approval_state", "effective_trade_date", "entry_min", "entry_max", "invalidation", "quantity_cap", "planned_loss_budget")
+    missing = [k for k in required if plan.get(k) in (None, "")]
+    if missing:
+        return False, "MISSING:" + ",".join(missing)
+    if plan["approval_state"] != "APPROVED":
+        return False, f"NOT_APPROVED:{plan['approval_state']}"
+    if plan["effective_trade_date"] != target_date:
+        return False, "EXPIRED_OR_NOT_YET_EFFECTIVE" if plan["effective_trade_date"] < target_date else "NOT_YET_EFFECTIVE"
+    if not (plan["invalidation"] < plan["entry_min"] <= plan["entry_max"]):
+        return False, "PRICE_BAND_INVALID"
+    return True, ""
+
+
+def allocate_ready_plans(plans, account, target_date, holdings=None, pending_orders=None, cash=None, verified_equity=None):
+    """Pure decision: for each plan, allocate or name the block. Never creates or touches an order."""
+    holdings = holdings or []
+    pending = pending_orders or []
+    account_id = account.get("account_id")
+    result = {"version": VERSION, "account_id": account_id, "target_date": target_date, "allocated": [], "blocked": []}
+    if account.get("status") != "ACTIVE" or any(v is None for v in (account.get("risk_profile") or {}).values()):
+        for p in plans:
+            result["blocked"].append({"plan_id": p.get("plan_id"), "symbol": p.get("symbol"), "reason": CONFIG_PENDING})
+        result["note"] = "账户协议未确认：不分配任何计划"
+        return result
+    seats = account.get("seats") or {"stock": 2, "etf": 1}
+    occupied_stock = {h["symbol"] for h in holdings if not _is_etf(h["symbol"])} | {o["symbol"] for o in pending if o.get("side", "BUY") == "BUY" and not _is_etf(o["symbol"])}
+    occupied_etf = {h["symbol"] for h in holdings if _is_etf(h["symbol"])} | {o["symbol"] for o in pending if o.get("side", "BUY") == "BUY" and _is_etf(o["symbol"])}
+    base = risk_base(verified_equity, account.get("approved_equity_ceiling"))
+    profile = account["risk_profile"]
+    reserved = sum(float(o.get("reserve", 0) or 0) for o in pending)
+    available_cash = (float(cash) - reserved) if cash is not None else None
+    used_risk = sum(float(h.get("risk", 0) or 0) for h in holdings) + sum(float(o.get("risk", 0) or 0) for o in pending)
+    theme_used = {}
+    for h in holdings:
+        theme_used[h.get("theme")] = theme_used.get(h.get("theme"), 0.0) + float(h.get("cost", 0) or 0)
+    for p in sorted(plans, key=lambda x: (x.get("priority", 10 ** 6), x.get("symbol", ""))):
+        ok, reason = plan_valid(p, target_date)
+        if not ok:
+            result["blocked"].append({"plan_id": p.get("plan_id"), "symbol": p.get("symbol"), "reason": reason})
+            continue
+        if p["account_id"] != account_id:
+            result["blocked"].append({"plan_id": p["plan_id"], "symbol": p["symbol"], "reason": f"ACCOUNT_MISMATCH:{p['account_id']}"})
+            continue
+        sym = p["symbol"]
+        if sym in occupied_stock or sym in occupied_etf or any(a["symbol"] == sym for a in result["allocated"]):
+            result["blocked"].append({"plan_id": p["plan_id"], "symbol": sym, "reason": "SECURITY_ALREADY_OCCUPIES_SEAT"})
+            continue
+        is_etf = _is_etf(sym)
+        seat_used = len(occupied_etf) + sum(_is_etf(a["symbol"]) for a in result["allocated"]) if is_etf else len(occupied_stock) + sum(not _is_etf(a["symbol"]) for a in result["allocated"])
+        if seat_used >= seats["etf" if is_etf else "stock"]:
+            result["blocked"].append({"plan_id": p["plan_id"], "symbol": sym, "reason": "NO_SEAT_ETF" if is_etf else "NO_SEAT_STOCK"})
+            continue
+        if base is None or available_cash is None:
+            result["blocked"].append({"plan_id": p["plan_id"], "symbol": sym, "reason": "EQUITY_OR_CASH_UNVERIFIED"})
+            continue
+        per_share_loss = p["entry_max"] - p["invalidation"]
+        risk_room = min(base * profile["single_risk_pct"] / 100, base * profile["total_risk_pct"] / 100 - used_risk)
+        cap_pct = profile["etf_cap_pct"] if is_etf else profile["symbol_cap_pct"]
+        theme_room = base * profile["theme_cap_pct"] / 100 - theme_used.get(p.get("primary_theme"), 0.0)
+        notional_room = min(available_cash, base * cap_pct / 100, theme_room if not is_etf else base * cap_pct / 100)
+        qty = int(min(notional_room / p["entry_max"], risk_room / per_share_loss, p["quantity_cap"]) // 100 * 100) if per_share_loss > 0 else 0
+        if qty < 100:
+            result["blocked"].append({"plan_id": p["plan_id"], "symbol": sym, "reason": "CAPITAL_BLOCK",
+                                      "detail": {"risk_room": round(risk_room, 2), "notional_room": round(notional_room, 2), "per_share_loss": round(per_share_loss, 4)}})
+            continue
+        planned_loss = qty * per_share_loss
+        result["allocated"].append({"plan_id": p["plan_id"], "symbol": sym, "quantity": qty, "notional_max": round(qty * p["entry_max"], 2),
+                                    "planned_loss": round(planned_loss, 2), "risk_base": round(base, 2), "theme": p.get("primary_theme")})
+        available_cash -= qty * p["entry_max"]
+        used_risk += planned_loss
+        theme_used[p.get("primary_theme")] = theme_used.get(p.get("primary_theme"), 0.0) + qty * p["entry_max"]
+    result["seats"] = {"stock_occupied_before": len(occupied_stock), "etf_occupied_before": len(occupied_etf), "limits": seats}
+    return result
+
+====================================================================================================
+FILE: mainwave_engine/trading/rules.py
+LINES: 150  SHA256[:16]: 3e092c75d0778906
+SOURCE: D:\AICode\Astock\mainwave_engine\trading\rules.py
+====================================================================================================
+"""Frozen rule dispatch. An old plan runs its registered rules, or waits for review."""
+import hashlib
+import json
+from pathlib import Path
+from . import store
+
+VERSION = "rule_dispatch_v1_20260920"
+# Entry, adds and exit are frozen for forward validation. Historical exit evidence flipped between common and
+# full samples and on removing the largest case; tuning further would only fit the researcher to the sample.
+FREEZE = {"frozen_at": "2026-09-21", "parts": ("entry", "exit", "pullback", "mode"),
+          "reason": "历史证据不稳定（常见样本略好、全样本反转、去掉最大案例反转），继续调参只会形成研究者过拟合",
+          "lift_condition": "AUTO 账前向有效样本（题材×信号日簇）达到登记实验的 n_effective_min 后，按经济门禁决定",
+          "allowed": "影子版本（shadow_only）可以登记与观察，不改动生效规则"}
+# Parameters can be restored from the registry; executable code cannot be rebuilt from a hash.
+RESTORABLE = "PARAMETERS_ONLY_CODE_NOT_REBUILDABLE"
+SOURCES = {
+    "entry": "mainwave_engine/entry_policy.py",
+    "exit": "mainwave_engine/exit_policy.py",
+    "pullback": "mainwave_engine/pullback_plan.py",
+    "mode": "mainwave_engine/trading/modes.py",
+    "execution": "mainwave_engine/trading/paper.py",
+    "dependency": "mainwave_engine/route_evidence.py",
+}
+
+
+def _table(conn):
+    conn.execute("CREATE TABLE IF NOT EXISTS rule_versions ("
+                 "id TEXT PRIMARY KEY, kind TEXT NOT NULL, version TEXT NOT NULL, "
+                 "created_at TEXT NOT NULL, payload TEXT NOT NULL)")
+
+
+def _hash(path, root=None):
+    target = Path(root or store.ROOT) / path
+    return hashlib.sha256(target.read_bytes()).hexdigest() if target.exists() else ""
+
+
+def build(root=None):
+    """Current rule set: versions, parameters and direct file hashes in one summary."""
+    from .. import entry_policy as EP, exit_policy as XP, pullback_plan as PP
+    from . import modes, paper
+    from . import VERSION as SOFTWARE
+    parts = {
+        "entry": {"version": EP.VERSION, "rules": EP.RULES,
+                  "parameters": {"initial": EP.INITIAL, "add_weights": list(EP.ADD_WEIGHTS),
+                                 "pullbacks": list(EP.PULLBACKS), "window": EP.WINDOW}},
+        "exit": {"version": XP.VERSION, "rules": XP.RULES, "parameters": {}},
+        "pullback": {"version": getattr(PP, "VERSION", ""), "rules": {}, "parameters": {}},
+        "mode": {"version": modes.VERSION, "rules": {}, "parameters": modes.CONTRACT_SUMMARY},
+        "execution": {"version": paper.VERSION, "rules": {}, "parameters": {"model": paper.MODEL}},
+        "dependency": {"version": _dependency_version(), "rules": {}, "parameters": {}},
+    }
+    for kind, item in parts.items():
+        item["source"] = SOURCES[kind]
+        item["sha256"] = _hash(SOURCES[kind], root)
+    payload = {"registry_version": VERSION, "software_version": SOFTWARE, "parts": parts,
+               "restorable": RESTORABLE, "freeze": FREEZE,
+               "note": "软件版本号变化不等于策略冻结；策略、数据与研究协议版本分别记录。"}
+    payload["fingerprint"] = store.digest(payload)
+    return payload
+
+
+def _dependency_version():
+    from .. import route_evidence as RE
+    return getattr(RE, "VERSION", "")
+
+
+def register(db=store.DB_PATH, root=None):
+    """Record the current rule set so a later plan can look its own version back up."""
+    payload = build(root)
+    with store.connect(db) as conn:
+        _table(conn)
+        for kind, item in payload["parts"].items():
+            identity = f"{kind}:{item['version']}:{item['sha256'][:12]}"
+            conn.execute("INSERT OR IGNORE INTO rule_versions VALUES (?,?,?,?,?)",
+                         (identity, kind, item["version"], store.now(), store.encoded(item)))
+    return payload
+
+
+def lookup(kind, version, sha256, db=store.DB_PATH, conn=None):
+    """Inside a ledger transaction the caller's connection is reused; a second writer would self-lock."""
+    if conn is not None:
+        return _lookup(conn, kind, version, sha256)
+    with store.connect(db) as own:
+        return _lookup(own, kind, version, sha256)
+
+
+def _lookup(conn, kind, version, sha256):
+    _table(conn)
+    row = conn.execute("SELECT payload FROM rule_versions WHERE id=?",
+                       (f"{kind}:{version}:{sha256[:12]}",)).fetchone()
+    if row:
+        return json.loads(row[0])
+    row = conn.execute("SELECT payload FROM rule_versions WHERE kind=? AND version=? ORDER BY rowid DESC LIMIT 1",
+                       (kind, version)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def dispatch(plan, db=store.DB_PATH, root=None, conn=None):
+    """Decide which rules an existing plan runs under, and say so out loud."""
+    current = build(root)
+    frozen = plan.get("rule_fingerprint") or {}
+    legacy = plan.get("exit_code_hashes") or {}
+    parts, drift, unrestorable = {}, [], []
+    for kind, item in current["parts"].items():
+        want_version = frozen.get(kind, {}).get("version") or _legacy_version(plan, kind)
+        want_hash = frozen.get(kind, {}).get("sha256") or _legacy_hash(legacy, kind)
+        if not want_version and not want_hash:
+            parts[kind] = {**item, "dispatch": "CURRENT_NO_FROZEN_RECORD"}
+            continue
+        same = (want_version in ("", item["version"])) and (want_hash in ("", item["sha256"]))
+        if same:
+            parts[kind] = {**item, "dispatch": "CURRENT_MATCHES_FROZEN"}
+            continue
+        drift.append(kind)
+        registered = lookup(kind, want_version, want_hash or "", db, conn)
+        if registered and registered.get("sha256") == want_hash:
+            parts[kind] = {**registered, "dispatch": "FROZEN_PARAMETERS_FROM_REGISTRY",
+                           "limit": RESTORABLE}
+        else:
+            unrestorable.append(kind)
+            parts[kind] = {"version": want_version, "sha256": want_hash,
+                           "dispatch": "UNRESTORABLE_PENDING_REVIEW", "limit": RESTORABLE}
+    # Parameters can be read back from the registry; the code that ran them cannot. So any drift
+    # means the frozen version is not executable: no new adds, deterministic risk floors keep running.
+    status = ("PENDING_REVIEW" if unrestorable else "PARAMETERS_ON_RECORD_CODE_CHANGED" if drift else "CURRENT")
+    return {"version": VERSION, "plan_id": plan.get("id"), "status": status, "parts": parts,
+            "drift": drift, "unrestorable": unrestorable,
+            "executable_as_frozen": not drift, "new_adds_allowed": not drift,
+            "risk_tasks_retained": True,
+            "note": ("规则已变更且登记表没有原版本，该计划待人工核对；不补仓，已有持仓只跑确定性硬底线与结构失效。"
+                     if unrestorable else
+                     "规则已变更：原参数可从登记表取回，但原代码不可重建，不算按冻结版本执行；"
+                     "不补仓，已有持仓只跑确定性硬底线与结构失效，其余等待复核。"
+                     if drift else "规则未变更，按当前版本运行。")}
+
+
+def _legacy_version(plan, kind):
+    return {"exit": plan.get("exit_version"), "entry": plan.get("entry_version"),
+            "execution": plan.get("version")}.get(kind, "")
+
+
+def _legacy_hash(legacy, kind):
+    return {"exit": legacy.get("exit_policy.py"), "pullback": legacy.get("pullback_plan.py")}.get(kind, "")
+
+
+def fingerprint(root=None):
+    """Compact per-part version+hash record stored on every new plan."""
+    current = build(root)
+    return {kind: {"version": item["version"], "sha256": item["sha256"], "source": item["source"]}
+            for kind, item in current["parts"].items()}
+
+====================================================================================================
+FILE: mainwave_engine/s4_scan.py
+LINES: 322  SHA256[:16]: 9fc0da37c8ea7f42
+SOURCE: D:\AICode\Astock\mainwave_engine\s4_scan.py
+====================================================================================================
+"""Daily S4 opportunity scan (pullback to EMA20 then relaunch) -> ranked list for manual selection into the virtual
+portfolio with the S4_LAD exit. Report only: nothing is bought; `--pick` records a manual choice at that day's close.
+
+Signal (research/four_dim_v2.py, S4研究总结_20260925.md), main board (60/00), non-ST, on continuous-adjusted prices:
+  trend    MA20 > MA60, MA60 above its value 20 sessions ago, close > MA60
+  pullback within the last 10 sessions a low <= EMA20 x 1.02 with that close >= EMA20 x 0.99, no close < EMA20 x 0.97,
+           and a prior run (max high of the last 20 sessions >= EMA20 x 1.08)
+  relaunch today up >= 2%, close above the last 5 closes and above MA5, close/EMA20 - 1 <= 12%; first day in 5
+Exclusions (shown, not recommended): R1 MACD top divergence, R2 green bars growing, R3 close > 15% under the 60-session high.
+Ranking: LEAD = the stock's 20-session return rank inside its industry (all boards). Weak evidence: it separated
+outcomes in 2026 only (S4题材资金排序_20260925.md); there is no ranking that held in both years.
+Event binding (external review 2026-09-26): a signal belongs to its pullback event, identified by the last qualifying
+EMA20 touch before it. Only the first relaunch of an event is a new first entry; a later relaunch with no new touch since
+the previous S4 day (within 10 sessions) is listed as progress of that event. A symbol whose S4 position of the same event already exists (open or closed) is not
+offered again: after a stop, only a new pullback event can bring it back.
+Exit contract carried to the virtual portfolio: pullback low (lowest low of the 10 sessions before the signal) and the
+signal day's open, used by the graded denial exit (S4离场研究 / accept_failure.py B2h).
+Market: the CSI 1000 trend-exit alert (position_monitor.market_risk) is printed on top; when it is red, no new buy is advised.
+Index trend gate (index_trend, 2026-11-20): when the CSI 300 EMA100 slope over 10 sessions is positive, S4 candidates move to
+"excluded" with the reason attached instead of being recommended. Reason: in that regime the S4 entry timing is measurably worse
+than entering the same stock on a random day (AStockV2, docs/市场环境分层与入场时机_20261120.md). It is a separate, slower
+filter from the CSI 1000 MA20 alert above.
+python -m mainwave_engine.s4_scan --date YYYY-MM-DD [--pick SYMBOL]
+"""
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from . import stock_analyzer as SA
+from . import strong_trend as ST
+from . import virtual_portfolio as VP
+from . import theme_risk as TR
+from . import theme_semantics as TS
+from . import index_trend as IT
+from .trading import position_monitor as PM
+
+VERSION = "s4_scan_v1_3_20261120"
+ROOT = Path(__file__).resolve().parents[1]
+REF_RULE = ("参考排序（前向验证中，S4选股特征研究_20261011.md）：同日推荐里，单季营收同比增速越高、信号日收盘位置越低越好，"
+            "两项的排名百分位等权平均（缺数据记中位）；不改正式排序，每日登记到 s4_reference_rank_log.csv。")
+FIN_PATH = Path(__file__).resolve().parents[1] / "results/r4_fundamentals_panel.csv"
+PRINCIPLE = ("执行原则：股票最多 2 只，ETF 另占 1 个名额；按账户风险预算而不是胜率分配仓位。"
+             "S4 保留原分批止盈合约；G1 红灯或风险未知不开新仓；卖出建议在建议的开盘执行。"
+             "核心指数 EMA100 中期趋势向上时也不开 S4 新仓（该环境下形态启动日入场的时点价值为负）。")
+NOTICE = ("S4 机会扫描：只列出候选，不自动买入。人工选定后用 --pick 记入虚拟持仓（按当日收盘价记账），离场按分批止盈 S4_LAD 每日给出建议。"
+          "排序依据（行业内 20 日强度）只在 2026 年有弱区分，两年都稳定的排序依据尚未找到。"
+          "2026-11-20 起新增核心指数中期趋势环境门（沪深300 EMA100 斜率），被拦下的候选全部列在“已排除”里并注明原因，不静默丢弃。")
+
+
+def signals(f):
+    """S4 flags on an adjusted frame (open/high/low/close/volume). Returns a DataFrame aligned to f."""
+    c, h, l = (f[k].to_numpy(float) for k in ("close", "high", "low"))
+    s = pd.Series(c)
+    ma5, ma20, ma60 = (s.rolling(n).mean().to_numpy() for n in (5, 20, 60))
+    ema20 = s.ewm(span=20, adjust=False).mean().to_numpy()
+    dif = s.ewm(span=12, adjust=False).mean() - s.ewm(span=26, adjust=False).mean()
+    dea = dif.ewm(span=9, adjust=False).mean()
+    hist = (2 * (dif - dea)).to_numpy()
+    prev = np.r_[np.nan, c[:-1]]
+    trend = (ma20 > ma60) & (ma60 > np.r_[np.full(20, np.nan), ma60[:-20]]) & (c > ma60)
+    bias = c / ema20 - 1
+    touched = (l <= ema20 * 1.02) & (c >= ema20 * 0.99)
+    touch = pd.Series(touched).shift(1).rolling(10).max().to_numpy() == 1
+    idx = pd.Series(np.where(touched, np.arange(len(c)), np.nan))
+    last_touch = idx.shift(1).ffill().to_numpy()  # the most recent touch before each day
+    last_touch = np.where(np.arange(len(c)) - last_touch <= 10, last_touch, np.nan)
+    pb_low = pd.Series(l).shift(1).rolling(10).min().to_numpy()
+    no_break = pd.Series(c < ema20 * 0.97).shift(1).rolling(10).max().to_numpy() == 0
+    run = pd.Series(h).shift(1).rolling(20).max().to_numpy() >= ema20 * 1.08
+    close5 = s.shift(1).rolling(5).max().to_numpy()
+    s4 = trend & touch & no_break & run & (c / prev - 1 >= 0.02) & (c > close5) & (c > ma5) & (bias <= 0.12)
+    s4 = s4 & ~(pd.Series(s4).shift(1).rolling(5).max().to_numpy() == 1)
+    # a relaunch with no new EMA20 touch after the previous S4 day (within 10 sessions) is progress of that event,
+    # not a new first entry; a fresh touch after it starts a new event
+    progress, last_s4 = np.zeros(len(c), bool), None
+    for t in np.nonzero(s4)[0]:
+        progress[t] = last_s4 is not None and t - last_s4 <= 10 and not touched[last_s4 + 1:t].any()
+        last_s4 = t
+    n = len(c)
+    high20 = s.rolling(20).max().to_numpy()
+    diverge = np.zeros(n, bool)
+    for t in np.nonzero(c >= high20)[0]:
+        if t >= 45:
+            k = t - 40 + int(np.argmax(c[t - 40:t - 4]))
+            diverge[t] = c[t] > c[k] and hist[k] > 0 and hist[t] < hist[k]
+    green_down = (hist < 0) & ~(hist > np.r_[np.nan, np.nan, hist[:-2]])
+    dd60 = c / pd.Series(h).rolling(60).max().to_numpy() - 1
+    vr = f["volume"].astype(float) / f["volume"].astype(float).shift(1).rolling(20).mean()
+    return pd.DataFrame({"s4": s4, "progress": progress, "last_touch": last_touch, "pb_low": pb_low, "R1": diverge, "R2": green_down, "R3": dd60 < -0.15, "dd60": dd60, "bias": bias,
+                         "ema20": ema20, "pct": c / prev - 1, "vr": vr.to_numpy(),
+                         "macd": np.where(hist >= 0, "红柱", "绿柱")})
+
+
+def scan(day, data_root=None):
+    data_root = Path(data_root or ROOT / "data")
+    names = ST.names(ROOT)
+    mp = json.loads((ROOT / "concept_mapping.json").read_text(encoding="utf-8")).get("mapping", {})
+    industry = {s: v.get("industry") for s, v in mp.items()}
+    r20, rows = {}, []
+    for path in sorted(data_root.glob("s[hz]_*_daily.csv")):
+        sym = path.name[:9]
+        if sym[:5] not in ("sh_60", "sz_00", "sz_30", "sh_68"):
+            continue
+        try:
+            raw = pd.read_csv(path, usecols=lambda c: c in {"date", "open", "high", "low", "close", "preclose", "volume",
+                                                           "amount", "tradestatus", "isST"})
+        except (OSError, ValueError):
+            continue
+        raw["date"] = raw["date"].astype(str).str[:10]
+        raw = raw[(raw["date"] <= day)].drop_duplicates("date").tail(260).reset_index(drop=True)
+        if len(raw) < 130 or raw["date"].iloc[-1] != day or float(raw["tradestatus"].iloc[-1]) != 1:
+            continue
+        f = ST.adjusted(raw)
+        r20[sym] = float(f["close"].iloc[-1] / f["close"].iloc[-21] - 1)
+        name = str(names.get(sym, ""))
+        if sym[:5] not in ("sh_60", "sz_00") or float(raw["isST"].iloc[-1] or 0) == 1 or "ST" in name.upper() or "退" in name:
+            continue
+        x = signals(f)
+        if not x["s4"].iloc[-1]:
+            continue
+        r = x.iloc[-1]
+        why = [w for w, hit in (("R1 顶背离", r.R1), ("R2 绿柱放大", r.R2), ("R3 距60日高>15%", r.R3)) if hit]
+        scale = float(f["adj_factor"].iloc[-1])
+        touch_day = f["date"].iloc[int(r.last_touch)] if r.last_touch == r.last_touch else ""
+        event = {"event_id": f"{sym}:{touch_day}", "touch_day": touch_day, "first_recovery_day": day,
+                 "pullback_low": round(float(r.pb_low) / scale, 3), "signal_open": float(raw["open"].iloc[-1]),
+                 "progress": bool(r.progress)}
+        rows.append({"symbol": sym, "name": name, "industry": industry.get(sym) or "", "close": float(raw["close"].iloc[-1]),
+                     "pct": round(float(r.pct) * 100, 2), "bias_ema20": round(float(r.bias) * 100, 1),
+                     "dd60": round(float(r.dd60) * 100, 1), "macd": r.macd, "vol_ratio": round(float(r.vr), 2),
+                     "amount_yi": round(float(raw["amount"].iloc[-1]) / 1e8, 2), "excluded": why,
+                     "clv": clv(raw.iloc[-1]),
+                     "ema20_raw": round(float(r.ema20) / scale, 3), "event": event})
+    peers = pd.Series(r20)
+    groups = pd.Series({s: industry.get(s) for s in peers.index})
+    for row in rows:
+        same = peers[groups == row["industry"]] if row["industry"] else pd.Series(dtype=float)
+        row["lead"] = round(float(same.rank(pct=True)[row["symbol"]]), 2) if len(same) >= 5 else None
+        c = row["close"]
+        ev = row["event"]
+        row["plan"] = {"entry_ref": c, "stop": round(c * 0.90, 2), "tp1": round(c * 1.10, 2), "tp2": round(c * 1.20, 2),
+                       "trail": f"两日收盘 < {row['ema20_raw'] * 0.97:.2f}（EMA20×0.97，随日更新）",
+                       "denial": f"3 日内收盘 < {ev['signal_open']:.2f}（信号日开盘）卖一半；收盘 < {ev['pullback_low']:.2f}（回踩低点）"
+                                 f"或 5 日内两次收于 EMA20 下，卖出剩余"}
+    taken = {p.get("s4_event_id") for p in VP.positions() if p.get("s4_event_id")}
+    trend = IT.regime(day, data_root)
+    gate_reason = None
+    if trend.get("gate") != "ALLOW":
+        gate_reason = f"环境门：{trend.get('text')}"
+    for r in rows:
+        if gate_reason:
+            r["excluded"].append(gate_reason)
+        if r["event"]["progress"]:
+            r["excluded"].append(f"同一回踩事件（触及 {r['event']['touch_day']}）已出过首仓信号，本次是旧事件的进展")
+        elif r["event"]["event_id"] in taken:
+            r["excluded"].append("该回踩事件已记入过虚拟持仓（持有中或已结束）；止损后需新的回踩事件才能再入选")
+    kept = sorted([r for r in rows if not r["excluded"]], key=lambda r: -(r["lead"] if r["lead"] is not None else -1))
+    for i, r in enumerate(kept, 1):
+        r["rank"] = i
+    sales, fin_asof = fundamentals(day, [r["symbol"] for r in kept])
+    reference(kept, sales)
+    market = PM.market_risk(day, data_root)
+    return {"as_of": day, "version": VERSION, "notice": NOTICE, "market_risk": market,
+            "market_warning": PM.market_warning(day, data_root),
+            "index_trend": trend,
+            "buy_advised": market.get("level") == "NORMAL", "universe": len(r20), "reference_rule": REF_RULE,
+            "fundamentals_latest_ann": fin_asof,
+            "recommended": kept, "excluded": [r for r in rows if r["excluded"]]}
+
+
+def clv(bar):
+    """Close location of a daily bar: 0 at the low, 1 at the high."""
+    rng = float(bar["high"]) - float(bar["low"])
+    return round((float(bar["close"]) - float(bar["low"])) / rng, 3) if rng > 0 else None
+
+
+def fundamentals(day, symbols, path=None):
+    """Latest quarterly sales growth announced before day (the report of the latest announcement), per symbol."""
+    path = Path(path or FIN_PATH)
+    if not symbols or not path.exists():
+        return {}, ""
+    fin = pd.read_csv(path, usecols=["ts_code", "ann_date", "end_date", "q_sales_yoy"]).dropna(subset=["ann_date"])
+    fin["ann"] = fin["ann_date"].astype(float).astype(int).astype(str)
+    fin = fin[fin["ann"] < day.replace("-", "")]
+    latest = fin["ann"].max() if len(fin) else ""
+    fin["symbol"] = fin["ts_code"].str[-2:].str.lower() + "_" + fin["ts_code"].str[:6]
+    last = fin[fin["symbol"].isin(symbols)].sort_values(["ann", "end_date"]).groupby("symbol").tail(1)
+    return {s: (None if v != v else round(float(v), 2)) for s, v in zip(last["symbol"], last["q_sales_yoy"])}, latest
+
+
+def reference(kept, sales):
+    """Reference score among the day's recommendations: percentile ranks of high sales growth and low close location."""
+    if not kept:
+        return
+    t = pd.DataFrame({"clv": [r.get("clv") for r in kept], "sales": [sales.get(r["symbol"]) for r in kept]}, dtype=float)
+    score = ((-t["clv"]).rank(pct=True).fillna(0.5) + t["sales"].rank(pct=True).fillna(0.5)) / 2
+    for r, s in zip(kept, score):
+        r["q_sales_yoy"], r["ref_score"] = sales.get(r["symbol"]), round(float(s), 3)
+    for i, r in enumerate(sorted(kept, key=lambda r: (-r["ref_score"], r["rank"])), 1):
+        r["ref_rank"] = i
+
+
+def log_reference(out, path):
+    """Forward record of both orders, one block per day (a rerun replaces that day)."""
+    rows = [{"date": out["as_of"], "symbol": r["symbol"], "name": r["name"], "rank": r["rank"], "ref_rank": r.get("ref_rank"),
+             "ref_score": r.get("ref_score"), "clv": r.get("clv"), "q_sales_yoy": r.get("q_sales_yoy"),
+             "fundamentals_latest_ann": out.get("fundamentals_latest_ann", ""), "buy_advised": out.get("buy_advised"),
+             "index_trend_gate": (out.get("index_trend") or {}).get("gate"),
+             "index_trend_slope": (out.get("index_trend") or {}).get("slope"),
+             "version": out["version"]} for r in out["recommended"]]
+    old = pd.read_csv(path, dtype={"date": str}) if Path(path).exists() else pd.DataFrame()
+    if len(old):
+        old = old[old["date"] != out["as_of"]]
+    pd.concat([old, pd.DataFrame(rows)], ignore_index=True).to_csv(path, index=False, encoding="utf-8-sig")
+
+
+def render(out):
+    m = out["market_risk"]
+    lines = [f"# S4 机会 {out['as_of']}", ""]
+    if m.get("level") == "TREND_EXIT":
+        lines += ['<div style="background:#c00000;color:#fff;padding:12px 16px;font-weight:bold">🔴 大盘趋势清仓中：'
+                  f"{m['text']}<br>不建议新开 S4 仓位。</div>", ""]
+    elif m.get("level") == "CRITICAL":
+        lines += [f'<div style="background:#b36b00;color:#fff;padding:12px 16px;font-weight:bold">🟠 {m["text"]}<br>不建议新开 S4 仓位。</div>', ""]
+    elif m.get("level") != "NORMAL":
+        lines += [f"🟠 大盘状态未确认：{m.get('text')}", ""]
+    else:
+        lines += [f"🟢 {m['text']}", ""]
+    w = out.get("market_warning") or {}
+    if w.get("level") == "WARNING":
+        lines += ["🟠 短期回调预警（约一半误报，不追高）：" + "；".join(f"{r['index']}：{r['text']}" for r in w["indices"] if r["level"] == "WARNING"), ""]
+    t = out.get("index_trend") or {}
+    if t.get("gate") == "BLOCK":
+        lines += ['<div style="background:#8a5a00;color:#fff;padding:12px 16px;font-weight:bold">🟠 中期趋势门：'
+                  f"{t.get('text')}</div>", ""]
+    elif t.get("gate") == "ALLOW":
+        lines += [f"🟡 中期趋势门：{t.get('text')}", ""]
+    else:
+        lines += [f"🟠 中期趋势门：{t.get('text')}", ""]
+    lines += [out["notice"], "", PRINCIPLE, "", f"扫描 {out['universe']} 只；形态候选 {len(out['recommended'])} 只；排除 {len(out['excluded'])} 只。", ""]
+    if out["recommended"]:
+        ref = sorted(out["recommended"], key=lambda r: r.get("ref_rank") or 999)
+        lines += ["## 形态候选（非入场许可；行业内20日强度为弱排序依据，右侧另列参考排名）", "",
+                  f"{out.get('reference_rule', '')}财务数据最新公告日：{out.get('fundamentals_latest_ann') or '缺失'}。", "",
+                  "参考排序前列：" + "、".join(f"{r['name']}{r['symbol'][3:]}" for r in ref[:5]), "",
+                  "|排名|参考排名|股票|行业|收盘|涨幅|偏离EMA20|距60日高|MACD|量比|行业内强度|单季营收增速|收盘位置|止损 −10%|止盈 +10% / +20%|其余离场|",
+                  "|---:|---:|---|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---|---|"]
+        for r in out["recommended"]:
+            p = r["plan"]
+            lead = "—" if r["lead"] is None else f"{r['lead']:.0%}"
+            sales = "—" if r.get("q_sales_yoy") is None else f"{r['q_sales_yoy']:+.1f}%"
+            loc = "—" if r.get("clv") is None else f"{r['clv']:.2f}"
+            lines.append(f"|{r['rank']}|{r.get('ref_rank', '—')}|{r['name']} {r['symbol'][3:]}|{r['industry']}|{r['close']:.2f}|{r['pct']:+.1f}%|"
+                         f"{r['bias_ema20']:+.1f}%|{r['dd60']:.1f}%|{r['macd']}|{r['vol_ratio']}|{lead}|{sales}|{loc}|{p['stop']}|"
+                         f"{p['tp1']} / {p['tp2']}|{p['denial']}；{p['trail']}；盈利≥10%后放量大阴/长上影|")
+        lines += ["", "人工选定后记入虚拟持仓（按当日收盘价，离场按 S4_LAD 每日给建议）：", "",
+                  f"`python -m mainwave_engine.s4_scan --date {out['as_of']} --pick <代码>`", ""]
+    if out["excluded"]:
+        lines += ["## 已排除（研究显示止损率更高）", ""] + [
+            f"- {r['name']} {r['symbol'][3:]}：{'、'.join(r['excluded'])}（距60日高 {r['dd60']:.1f}%，MACD {r['macd']}）"
+            for r in out["excluded"]] + [""]
+    return "\n".join(lines)
+
+
+def pick(day, symbol, out_root=None, db=None):
+    path = Path(out_root or SA.OUT_ROOT) / day.replace("-", "") / "s4_opportunities.json"
+    if not path.exists():
+        raise ValueError(f"{day} 还没有 S4 扫描结果，先运行扫描")
+    out = json.loads(path.read_text(encoding="utf-8"))
+    symbol = SA.normalize_symbol(symbol)
+    if not any(r["symbol"] == symbol for r in out["recommended"]):
+        reason = next(("、".join(r["excluded"]) for r in out["excluded"] if r["symbol"] == symbol), "不在当日 S4 推荐中")
+        raise ValueError(f"{symbol} 不能按 S4 记入：{reason}")
+    row = next(r for r in out["recommended"] if r["symbol"] == symbol)
+    market = out.get("market_risk") or {}
+    trend = out.get("index_trend") or {}
+    if (out.get("as_of") != day or out.get("buy_advised") is not True
+            or market.get("as_of") != day or market.get("level") != "NORMAL"):
+        raise ValueError("S4 入场复核未通过：大盘红灯、未知或数据过期，不接受新加入")
+    if trend.get("gate") != "ALLOW":
+        raise ValueError("S4 入场复核未通过：中期趋势门未放行（" + str(trend.get("text"))[:120] + "）")
+    mapping_path = ROOT / "concept_mapping.json"
+    info = json.loads(mapping_path.read_text(encoding="utf-8")).get("mapping", {}).get(symbol, {}) if mapping_path.exists() else {}
+    corrected, _ = TS.apply_membership_evidence({symbol: info}, day)
+    info = corrected[symbol]
+    risk = TR.evaluate_many([row.get("industry", "")] + info.get("concepts", []), day)
+    if risk["theme_risk_action"] != "ALLOW":
+        raise ValueError("S4 入场复核未通过：" + risk["theme_risk_reason"])
+    ev = row.get("event") or {}
+    return VP.add(symbol, day, db or VP.DB_PATH, strategy="S4_LAD",
+                  meta={"s4_event_id": ev.get("event_id"), "s4_touch_day": ev.get("touch_day"),
+                        "s4_pullback_low": ev.get("pullback_low"), "s4_signal_open": ev.get("signal_open")} if ev else None)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", required=True)
+    parser.add_argument("--pick")
+    args = parser.parse_args()
+    if args.pick:
+        result = pick(args.date, args.pick)
+        p = result["position"]
+        print(f"[s4_scan] {'已记入' if result['created'] else '已存在'}虚拟持仓 {p['name']} {p['symbol']} "
+              f"{p['entry_date']} 收盘 {p['entry_price']:.2f}，离场 {p.get('strategy', '默认')}", flush=True)
+        return 0
+    out = scan(args.date)
+    folder = SA.OUT_ROOT / args.date.replace("-", "")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "s4_opportunities.json").write_text(json.dumps(out, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    (folder / "s4_opportunities.md").write_text(render(out), encoding="utf-8")
+    log_reference(out, SA.OUT_ROOT / "s4_reference_rank_log.csv")
+    top = "、".join(f"{r['name']}{r['symbol'][3:]}" for r in out["recommended"][:5]) or "无"
+    print(f"[s4_scan] {args.date} 推荐 {len(out['recommended'])} 排除 {len(out['excluded'])} 大盘 {out['market_risk'].get('level')}"
+          f"；前列：{top} -> {folder / 's4_opportunities.md'}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+====================================================================================================
+FILE: mainwave_engine/route_scan.py
+LINES: 244  SHA256[:16]: 761784cc6f2b18a6
+SOURCE: D:\AICode\Astock\mainwave_engine\route_scan.py
+====================================================================================================
+"""Universe price discovery plus dated-chain intersection, with reusable snapshots."""
+from __future__ import annotations
+
+import argparse
+from concurrent.futures import ProcessPoolExecutor
+import hashlib
+import json
+from pathlib import Path
+import re
+from time import perf_counter
+
+import pandas as pd
+
+from . import route_evidence as RE
+from . import preparation_detector as PD
+from . import theme_semantics as TS
+from . import route_contracts as RC
+from .pipeline import _write
+from .review_clock import publish
+
+POLICY_PATH = Path(__file__).with_name("calibration") / "route_policy.json"
+STATUS_LABELS = {"CONFIRMATION_REVIEW": "突破接受，复核介入位置", "PREPARATION_WATCH": "准备观察，非买点",
+                 "WAIT_PRICE": "趋势保留，偏离过大不追", "RISK_WATCH": "供给压力，暂缓介入",
+                 "TREND_WATCH": "已接受，继续跟踪", "WAIT_ACCEPTANCE": "突破尝试，等待接受",
+                 "DATA_WAIT": "数据或资格不足"}
+STATUS_ORDER = {s: i for i, s in enumerate(STATUS_LABELS)}
+
+
+_BENCH = None
+
+
+def _bench():
+    """CSI300 20-day return by date, loaded once per process for the preparation detectors."""
+    global _BENCH
+    if _BENCH is None:
+        try:
+            _BENCH = PD.benchmark_ret20()
+        except (OSError, ValueError, KeyError):
+            _BENCH = pd.Series(dtype=float)
+    return _BENCH
+
+
+def load_policy() -> dict:
+    return json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+
+
+def assess_routes(row: dict, policy: str, routes: list[str]) -> dict:
+    result = RE.assess(row, policy)
+    current_preparation = row.get("preparation_valid", row.get("prepared", False))
+    independent = RC.price_confirmation(row)
+    ready = independent or not (set(routes) & {"R2", "R3"}) or bool(current_preparation)
+    result["independent_price_evidence"] = independent
+    result["route_requirements_met"] = ready
+    result["confirmation_pass"] = result["confirmation_pass"] and result["status"] == "CONFIRMATION_REVIEW"
+    if not ready:
+        result["confirmation_pass"] = False
+        if result["status"] == "CONFIRMATION_REVIEW":
+            result["status"] = "WAIT_ACCEPTANCE"
+    return result
+
+
+def snapshot(args: tuple[str, str, str]) -> dict:
+    filename, date, code_hash = args
+    path = Path(filename)
+    stat = path.stat()
+    fingerprint = [stat.st_size, stat.st_mtime_ns, code_hash, date]
+    cache = Path("results/mainwave_engine/_route_cache") / date.replace("-", "") / f"{path.stem}.json"
+    if cache.exists():
+        cached = json.loads(cache.read_text(encoding="utf-8"))
+        if cached.get("fingerprint") == fingerprint:
+            return {**cached["record"], "cache_hit": True}
+    symbol = path.stem.removesuffix("_daily")
+    try:
+        raw = pd.read_csv(path, encoding="utf-8-sig")
+        raw = raw[pd.to_datetime(raw.date).le(date)]
+        frame = RE.build(raw, symbol)
+        if frame.empty:
+            return {"symbol": symbol, "data_status": "SHORT_HISTORY", "cache_hit": False}
+        row = frame.iloc[-1]
+        names = ["date", "close", "ret5", "ret20", "bias_atr", "atr_pct", "probe_at", "retained", "supply",
+                 "prepared", "prepared_at", "attempt_prepared_at", "prepared_before_attempt", "demand",
+                 "supply_warning", "eligible", "st_known", "liquid", "amount_contract", "turnover_contract",
+                 "turnover_relative", "range_contract", "breakout_status", "breakout_event",
+                 "breakout_id", "breakout_attempt_at", "breakout_accepted_at", *RE.POLICIES]
+        names.extend(RE.PT.FIELDS)
+        record = json.loads(frame.tail(1)[list(dict.fromkeys(names))].to_json(orient="records", date_format="iso"))[0]
+        record["date"] = str(row.date.date())
+        record["symbol"] = symbol
+        ema20 = frame.return_index.ewm(span=20, adjust=False).mean().iloc[-1]
+        record["ema20_bias"] = float((row.return_index / ema20 - 1) * 100)
+        record["data_status"] = "FRESH" if record["date"] == date else "STALE"
+        accepted = frame.index[frame.breakout_id.eq(row.breakout_id) & frame.breakout_event.eq("ACCEPTED")]
+        record["acceptance_age"] = int(len(frame) - 1 - accepted[-1]) if len(accepted) else None
+        attempts = frame.index[frame.breakout_id.eq(row.breakout_id) & frame.breakout_event.eq("ATTEMPT")]
+        record["attempt_age"] = int(len(frame) - 1 - attempts[-1]) if len(attempts) else None
+        factor = float(row.close / row.return_index)
+        record["boundary_price"] = float(row.breakout_boundary_index * factor) if pd.notna(row.breakout_boundary_index) else None
+        record["invalid_price"] = float(row.breakout_invalid_index * factor) if pd.notna(row.breakout_invalid_index) else None
+        record["frozen_atr_price"] = float(row.breakout_frozen_atr * factor) if pd.notna(row.breakout_frozen_atr) else None
+        # Shadow preparation readings ride along in the cached record; they create no route and no candidate state.
+        record["preparation"] = PD.latest(frame, _bench())
+        record["cache_hit"] = False
+        _write(cache, {"fingerprint": fingerprint, "record": record})
+        return record
+    except (OSError, ValueError, KeyError, pd.errors.ParserError) as exc:
+        return {"symbol": symbol, "data_status": "ERROR", "error": str(exc), "cache_hit": False}
+
+
+def route_ids(row: dict, chains: list[dict], date: str) -> tuple[list[str], list[dict]]:
+    if row.get("data_status") != "FRESH" or not row.get("eligible", False):
+        return [], []
+    accepted = row.get("acceptance_age") is not None and row["acceptance_age"] <= 3 and row.get("breakout_status") in {"ACCEPTED", "ADVANCING"}
+    attempt = row.get("attempt_age") is not None and row["attempt_age"] <= 3 and row.get("breakout_status") == "ATTEMPT"
+    prepared = bool(row.get("prepared") or (accepted and row.get("prepared_before_attempt")))
+    linked = [c for c in chains if str(c.get("as_of")) == date and c.get("theme_id") and c.get("leader")
+              and c["leader"] != row["symbol"] and c.get("anchor_date") and str(c["anchor_date"]) <= date
+              and c.get("theme_lifecycle") in {"FERMENTING", "IGNITED", "DIFFUSING"}
+              and 1 <= pd.to_numeric(c.get("anchor_age_sessions"), errors="coerce") <= 8
+              and pd.to_numeric(c.get("lag_gap_atr"), errors="coerce") >= 0.75]
+    routes = []
+    if prepared:
+        routes.append("R2")
+    if accepted or attempt:
+        routes.append("R1")
+    if linked:
+        routes.insert(0, "R3")
+        if "R1" in routes and not prepared:
+            routes.remove("R1")
+            routes.insert(0, "R1")
+    return routes, linked
+
+
+def run(date: str, workers: int = 4) -> dict:
+    output = Path("results/mainwave_engine") / date.replace("-", "")
+    policy = load_policy()
+    code_hash = hashlib.sha256(b"".join(Path(p).read_bytes() for p in
+        (__file__, RE.__file__, RE.PE.__file__, RE.BE.__file__, RE.PT.__file__, RC.__file__, PD.__file__))).hexdigest()
+    paths = sorted(p for p in Path("data").glob("*_daily.csv") if re.fullmatch(
+        r"(?:sh_(?:60|68)|sz_(?:00|30))\d{4}_daily.csv", p.name))
+    started = perf_counter()
+    audit = []
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        for i, row in enumerate(pool.map(snapshot, [(str(p), date, code_hash) for p in paths], chunksize=8), 1):
+            audit.append(row)
+            if i % 1000 == 0 or i == len(paths):
+                print(f"[route_scan] {i}/{len(paths)} seconds={perf_counter()-started:.1f}", flush=True)
+    chain_path = output / "slow_carrier_diagnostics.csv"
+    chains = pd.read_csv(chain_path).fillna("").to_dict("records") if chain_path.exists() else []
+    by_symbol = {}
+    for chain in chains:
+        by_symbol.setdefault(chain["symbol"], []).append(chain)
+    mapping, mapping_meta = TS.load_mapping_as_of(date)
+    records = []
+    for row in audit:
+        routes, linked = route_ids(row, by_symbol.get(row["symbol"], []), date)
+        row["route_ids"] = "|".join(routes)
+        if not routes:
+            row["exclusion"] = row["data_status"] if row["data_status"] != "FRESH" else "NO_RECENT_ROUTE_EVIDENCE_OR_INELIGIBLE"
+            continue
+        result = assess_routes(row, policy["policy"], routes)
+        identity = mapping.get(row["symbol"], {})
+        theme = "|".join(dict.fromkeys(c["theme_label"] for c in linked)) or identity.get("industry", "未确认")
+        path = {"R1": "IGNITION", "R2": "LURK", "R3": "PROPAGATION"}[routes[0]]
+        records.append({**row, "as_of": date, "name": identity.get("name", row["symbol"]),
+            "route_id": routes[0], "route_label": RE.ROUTE_LABELS[routes[0]], "route_status": result["status"],
+            "route_status_label": STATUS_LABELS[result["status"]], "route_policy": policy["policy"],
+            "route_requirements_met": result["route_requirements_met"],
+            "independent_price_evidence": result["independent_price_evidence"],
+            "strict_chain_verified": False,
+            "chain_source_grade": "DECLARED_ASOF_ONLY" if linked else "NOT_APPLICABLE",
+            "confirmation_pass": result["confirmation_pass"],
+            "route_risks": "|".join(result["risks"]), "route_source": "DATED_CHAIN_AND_PRICE" if linked else "PRICE_RECONSTRUCTION_TODAY",
+            "route_theme_id": "|".join(c["theme_id"] for c in linked),
+            "discovery_path": path, "discovery_path_label": RE.ROUTE_LABELS[routes[0]],
+            "belonging_theme": theme, "related_themes": theme, "theme_source": "DATED_CHAIN" if linked else "IDENTITY_ONLY_NOT_CATALYST",
+            "theme_lifecycle": linked[0]["theme_lifecycle"] if linked else "",
+            "stock_lifecycle": "COILED" if path == "LURK" else "IGNITION",
+            "stock_lifecycle_label": "等待生命周期复核", "ema20_bias": row["ema20_bias"],
+            "r5": row["ret5"] * 100, "r20": row["ret20"] * 100,
+            "action": result["status"], "note": "因果量价代理；未宣称历史生产命中；无自动交易",
+            "chain_validation": "DATED_ARCHIVE_SMALL_SAMPLE" if linked else "NOT_APPLICABLE"})
+    records.sort(key=lambda r: (STATUS_ORDER[r["route_status"]], abs(r["bias_atr"]), r["symbol"]))
+    for i, row in enumerate(records, 1):
+        row["rank"] = i
+    output.mkdir(parents=True, exist_ok=True)
+    columns = ["symbol", "as_of", "route_id", "route_ids", "route_status", "rank"]
+    frame = pd.DataFrame(records) if records else pd.DataFrame(columns=columns)
+    frame.to_csv(output / "route_candidates.csv", index=False, encoding="utf-8-sig")
+    publish(output / "route_candidates.csv", date)
+    pd.DataFrame(audit).to_csv(output / "route_scan_audit.csv", index=False, encoding="utf-8-sig")
+    publish(output / "route_scan_audit.csv", date)
+    summary = {"as_of": date, "version": RE.VERSION, "policy": policy,
+               "universe": len(paths), "fresh": sum(r["data_status"] == "FRESH" for r in audit),
+               "errors": [r for r in audit if r["data_status"] == "ERROR"],
+               "cache_hits": sum(r["cache_hit"] for r in audit), "candidates": len(records),
+               "routes": {r: sum(r in row["route_ids"].split("|") for row in records) for r in RE.ROUTE_LABELS},
+               "overlap_stocks": sum(len(r["route_ids"].split("|")) > 1 for r in records),
+               "extra_route_memberships": sum(len(r["route_ids"].split("|")) - 1 for r in records),
+               "data_status_counts": pd.Series([r["data_status"] for r in audit]).value_counts().to_dict(),
+               "freshness_denominator": "CURRENT_LOCAL_UNIVERSE_NOT_EXPECTED_TRADABLE_UNIVERSE",
+               "preparation_origins": frame.preparation_origin.fillna("UNKNOWN").replace("", "UNKNOWN").value_counts().to_dict() if len(frame) else {},
+               "statuses": frame.route_status.value_counts().to_dict(), "mapping": mapping_meta,
+               "chain_archive_present": chain_path.exists(), "seconds": perf_counter() - started,
+               "orders_enabled": False, "feature_hash": code_hash}
+    # Shadow preparation watch: low-extension names the chosen detector flags today, outside any route or candidate state.
+    watch = []
+    if PD.CHOSEN:
+        for row in audit:
+            prep = row.get("preparation") or {}
+            if row.get("data_status") == "FRESH" and row.get("eligible") and prep.get(PD.CHOSEN):
+                identity = mapping.get(row["symbol"], {})
+                watch.append({"symbol": row["symbol"], "name": identity.get("name", row["symbol"]), "industry": identity.get("industry", ""),
+                              "detector": PD.CHOSEN, "bias_atr": row.get("bias_atr"), "excess20": prep.get("excess20"), "ret20": row.get("ret20"),
+                              "above_ma20_now": prep.get("above_ma20_now"), "reclaim_failed": prep.get("reclaim_failed"),
+                              "breakout_status": row.get("breakout_status"), "route_ids": row.get("route_ids", ""), "as_of": date,
+                              "basis": "SHADOW_PREPARATION_NOT_A_CANDIDATE_STATE"})
+        watch.sort(key=lambda r: (-(r["excess20"] if r["excess20"] is not None else -999.0), r["symbol"]))
+    watch_columns = ["symbol", "name", "industry", "detector", "bias_atr", "excess20", "ret20", "above_ma20_now", "reclaim_failed", "breakout_status", "route_ids", "as_of", "basis"]
+    pd.DataFrame(watch, columns=watch_columns).to_csv(output / "preparation_watch.csv", index=False, encoding="utf-8-sig")
+    publish(output / "preparation_watch.csv", date)
+    summary["preparation_watch"] = {"detector": PD.CHOSEN, "count": len(watch), "version": PD.VERSION}
+    _write(output / "route_scan_summary.json", summary)
+    fields = ["rank", "symbol", "name", "route_ids", "belonging_theme", "route_status_label", "preparation_first_seen", "preparation_origin", "probe_at",
+              "breakout_attempt_at", "breakout_accepted_at", "bias_atr", "route_risks"]
+    lines = [f"# 三路径证据扫描 {date}", "", f"- 全域 {len(paths)}，数据同日 {summary['fresh']}，候选 {len(records)}。",
+             f"- {summary['routes']}；允许多路线命中，不重复计算股票数量。",
+             "- R1=明确个股点火反查；R2=个股先行准备；R3=紧链传播承接。",
+             "- 量价准备不是主力身份；偏离过大不是派发；确认复核不等于买入指令。",
+             "- 同日数据率以本地股票域为分母，不是应交易股票覆盖率；缺日不自动解释为停牌。",
+             "- 有日期的链线索保留观察；缺少可核验发布时间和关系证据，不授予严格传播介入资格。",
+             "- 全部去留见route_scan_audit.csv；下表只展示前15，完整候选交给分析台。", "",
+             frame[fields].head(15).to_markdown(index=False) if len(frame) else "没有满足本轮条件的候选。"]
+    (output / "route_scan.md").write_text("\n".join(lines), encoding="utf-8")
+    print(f"[route_scan] candidates={len(records)} routes={summary['routes']} cache={summary['cache_hits']}/{len(paths)}", flush=True)
+    return summary
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", required=True)
+    parser.add_argument("--workers", type=int, default=4)
+    args = parser.parse_args()
+    result = run(str(pd.Timestamp(args.date).date()), args.workers)
+    raise SystemExit(1 if result["errors"] else 0)
