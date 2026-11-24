@@ -14,10 +14,10 @@
      471    237 行  mainwave_engine/trading/preflight.py
      714    251 行  mainwave_engine/trading/books.py
      971    451 行  mainwave_engine/trading/position_monitor.py
-    1428    104 行  mainwave_engine/index_trend.py
-    1538    424 行  mainwave_engine/virtual_portfolio.py
+    1428    123 行  mainwave_engine/index_trend.py
+    1557    424 行  mainwave_engine/virtual_portfolio.py
 
-合计 6 个文件、1910 行、120441 字节源码。
+合计 6 个文件、1929 行、121350 字节源码。
 ====================================================================================================
 FILE: mainwave_engine/trading/daily.py
 LINES: 443  SHA256[:16]: 2c14c99c5acf6723  BYTES: 29817
@@ -1426,26 +1426,37 @@ if __name__ == "__main__":
 
 ====================================================================================================
 FILE: mainwave_engine/index_trend.py
-LINES: 104  SHA256[:16]: 4097e9fddd3af9d1  BYTES: 5431
+LINES: 123  SHA256[:16]: 629933fce6dea815  BYTES: 6340
 SOURCE: D:\AICode\Astock\mainwave_engine\index_trend.py
 ====================================================================================================
-"""核心指数中期趋势环境门。
+"""核心指数中期趋势环境 —— 只报告, 不拦人 (2026-11-24 起)。
 
-只做多的市场里, 同一个形态在指数中期趋势向上和向下时含义不同。AStockV2 的
-分层检验 (D:/AICode/AStockV2/docs/市场环境分层与入场时机_20261120.md) 显示:
-S4 追启动日次日开盘的入场时点, 在核心指数中期上行时比"同一只股票随机某天
-入场"系统性差约 1%/笔; 3 个指数 x 3 种 EMA 长度 x 3 种回看 = 27 组参数
-全部显著为负、零组反向, 去掉最大赢家不变。指数下行时方向相反, 但样本只有
-3-4 段独立行情, 不足以作为正面结论。
+只做多的市场里, 同一个形态在指数中期趋势向上和向下时含义不同, 所以这里
+持续计算沪深300 EMA100 的 10 日斜率, 把环境标出来给人看。
 
-所以这里只做一件事: 把"核心指数 EMA100 斜率为正"标成不开新仓的环境。
+但它**不再拦人**。原因 (2026-11-24, AStockV2 复核):
+原先"在中期上行时不开 S4 新仓"的依据是 "该环境下 S4 入场时点比同股随机
+入场系统性差约 1%/笔, 27 组参数全部显著为负"。复核发现那个 1% 几乎全部
+来自安慰剂对照组本身的污染: "同股异日"安慰剂是均匀抽样, 没有未来信息,
+但其中有一批交易的**持仓窗口正好含住那次信号的行情** —— 它买的是同一波
+行情的更早位置, 收益远高于普通交易日 (实测 +7.4% vs 干净桶 +0.7%)。
+把这批剔除 (干净桶) 之后, 上行环境下 27 组参数**没有一组**显示显著劣势,
+点估计反而全部为正。
+
+所以现在的状态是:
+  report_only=True   只报告环境, 不参与任何放行/拦截;
+  blocks_entries=False 不拦任何候选;
+  regime 仍然照常算 (UP / DOWN / UNKNOWN), 供复盘与后续再检验。
+
+要重新启用这道门, 需要用干净桶口径重新做出结论, 并写死阈值, 不能沿用
+2026-11-20 那一版。
+
 判据只用当日收盘已知的信息 (EMA 是因果的, 斜率只用当日与 lookback 根之前
-的值)。数据不足时按未知处理并拒绝开新仓, 与中证1000 趋势门一致: 风险门
-不因数据缺失而放行。
+的值)。数据不足时按未知处理 —— 只影响报告, 不影响放行。
 
 与 mainwave_engine.trading.position_monitor.market_risk 的分工:
-  market_risk  中证1000 收盘 vs MA20, 快门, 管短期趋势破位;
-  index_trend  沪深300 EMA100 斜率, 慢门, 管中期趋势方向下的形态入场时机。
+  market_risk  中证1000 收盘 vs MA20, 快门, 管短期趋势破位 (仍然拦人);
+  index_trend  沪深300 EMA100 斜率, 慢门, 只做观察。
 两者不是同一个判据, 也不是同一个周期。
 
 python -c "from mainwave_engine import index_trend as T; print(T.regime('2026-11-19'))"
@@ -1459,18 +1470,24 @@ from pathlib import Path
 
 import pandas as pd
 
-VERSION = "index_trend_v1_1_20261124"
+VERSION = "index_trend_v2_20261124"
 INDEX_FILE = "000300_SH_index.csv"
 INDEX_NAME = "沪深300"
 SPAN = 100
 LOOKBACK = 10
 MIN_BARS = 250
-RULE = ("核心指数中期趋势门: 沪深300 EMA100 与 10 个交易日前的比值。"
-        "斜率为正 -> 不开 S4 新仓 (该环境下形态启动日入场的时点价值为负); "
-        "斜率为负 -> 允许 (但尚无充分样本证明更好); 数据不足 -> 未知, 不开新仓。")
-EVIDENCE = ("依据 AStockV2 分层检验 (2026-11-20): 27 组参数下 S4 入场时点"
-            "在该环境显著劣于同股随机入场; 指数下行方向的证据样本不足, "
-            "仅作观察, 不作为正面结论。")
+REPORT_ONLY = True
+BLOCKS_ENTRIES = False
+RULE = ("核心指数中期趋势 (只报告): 沪深300 EMA100 与 10 个交易日前的比值。"
+        "斜率为正 -> 环境记 UP; 斜率为负 -> 记 DOWN; 数据不足/过期 -> 记 UNKNOWN。"
+        "2026-11-24 起本判据不再拦截任何候选 (blocks_entries=False)。")
+EVIDENCE = ("2026-11-20 曾据此在中期上行时不开 S4 新仓, 依据是'该环境下 S4 "
+            "入场时点比同股随机入场差约 1%/笔, 27 组参数全部显著为负'。"
+            "2026-11-24 复核: 该结论由安慰剂窗口重叠污染造成 —— 同股异日"
+            "对照中有 1,494/10,204 笔的持仓窗口含住信号自己的行情, 买的是"
+            "同一波行情的更早位置 (平均 +7.4%, 干净桶仅 +0.7%)。剔除后, "
+            "上行环境 27 组参数无一组显著劣势, 点估计全部为正, 前提不成立, "
+            "故撤回拦截。指数下行方向只有 3-4 段独立行情, 同样不足以作为结论。")
 
 
 def _frame(as_of: str, data_root) -> pd.DataFrame:
@@ -1484,23 +1501,27 @@ def _frame(as_of: str, data_root) -> pd.DataFrame:
 
 def regime(as_of: str, data_root=None, span: int = SPAN,
            lookback: int = LOOKBACK) -> dict:
-    """核心指数中期趋势环境。返回的 gate 取 BLOCK / ALLOW / UNKNOWN。"""
+    """核心指数中期趋势环境。返回的 regime 取 UP / DOWN / UNKNOWN。
+
+    2026-11-24 起只报告不拦截: blocks_entries 恒为 False, gate 恒为 ALLOW。
+    """
     base = {"as_of": as_of, "index": INDEX_NAME, "version": VERSION, "rule": RULE,
-            "evidence": EVIDENCE, "report_only": False,
-            "gate": "UNKNOWN", "regime": "UNKNOWN", "status": "UNKNOWN",
+            "evidence": EVIDENCE, "report_only": REPORT_ONLY,
+            "blocks_entries": BLOCKS_ENTRIES,
+            "gate": "ALLOW", "regime": "UNKNOWN", "status": "UNKNOWN",
             "data_date": "", "close": None, "ema": None, "slope": None, "text": ""}
     try:
         f = _frame(as_of, data_root or Path("data"))
     except (OSError, ValueError, KeyError, pd.errors.EmptyDataError) as exc:
         return {**base, "status": "MISSING",
-                "text": f"{INDEX_NAME} 日线不可用 ({str(exc)[:80]}), 中期趋势未知, 不开 S4 新仓"}
+                "text": f"{INDEX_NAME} 日线不可用 ({str(exc)[:80]}), 中期趋势未知"}
     if len(f) < MIN_BARS:
         return {**base, "status": "INSUFFICIENT_HISTORY", "data_date": str(f["date"].iloc[-1]) if len(f) else "",
-                "text": f"{INDEX_NAME} 历史不足 {MIN_BARS} 个交易日, 中期趋势未知, 不开 S4 新仓"}
+                "text": f"{INDEX_NAME} 历史不足 {MIN_BARS} 个交易日, 中期趋势未知"}
     c = f["close"].astype(float).reset_index(drop=True)
     if not c.gt(0).all() or not c.map(math.isfinite).all():
         return {**base, "status": "INVALID_PRICE", "data_date": str(f["date"].iloc[-1]),
-                "text": f"{INDEX_NAME} 日线收盘价无效，中期趋势未知，不开 S4 新仓"}
+                "text": f"{INDEX_NAME} 日线收盘价无效，中期趋势未知"}
     ema = c.ewm(span=span, adjust=False).mean()
     slope = float(ema.iloc[-1] / ema.iloc[-1 - lookback] - 1)
     close = float(c.iloc[-1])
@@ -1509,17 +1530,15 @@ def regime(as_of: str, data_root=None, span: int = SPAN,
     if not fresh:
         return {**base, "status": "STALE", "data_date": data_date, "close": round(close, 2),
                 "ema": round(float(ema.iloc[-1]), 2), "slope": round(slope, 4),
-                "text": f"{INDEX_NAME} 最新日线为 {data_date}, 不是 {as_of}, 中期趋势未确认, 不开 S4 新仓"}
+                "text": f"{INDEX_NAME} 最新日线为 {data_date}, 不是 {as_of}, 中期趋势未确认"}
     up = slope > 0
     return {**base, "status": "FRESH", "data_date": data_date, "close": round(close, 2),
             "ema": round(float(ema.iloc[-1]), 2), "slope": round(slope, 4),
             "regime": "UP" if up else "DOWN",
-            "gate": "BLOCK" if up else "ALLOW",
-            "text": (f"{INDEX_NAME} EMA{span} 中期趋势向上 (10 日斜率 {slope*100:+.2f}%), "
-                     f"该环境下形态启动日入场的时点价值为负, 不开 S4 新仓"
+            "text": (f"{INDEX_NAME} EMA{span} 中期趋势向上 (10 日斜率 {slope*100:+.2f}%)"
                      if up else
-                     f"{INDEX_NAME} EMA{span} 中期趋势向下 (10 日斜率 {slope*100:+.2f}%), 允许 S4 新仓"
-                     "(该环境的正面证据样本不足, 只作观察)")}
+                     f"{INDEX_NAME} EMA{span} 中期趋势向下 (10 日斜率 {slope*100:+.2f}%)")
+                    + "（只报告, 不拦截 S4 候选）"}
 
 
 def main() -> None:

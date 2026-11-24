@@ -8,22 +8,47 @@
 重点审计目标: 独立验收引擎的撮合假设、对照组严谨性，以及与主引擎 mainwave_engine 的口径一致性
 
 目录（起始行号指本文件里 "FILE:" 标记所在行）:
-      22    323 行  docs/核心问题诊断与验收结论_20261120.md
-     351    201 行  docs/市场环境分层与入场时机_20261120.md
-     558     21 行  results/verdict/verdict.md
-     585    283 行  astockv2/execution.py
-     874    253 行  astockv2/control.py
-    1133    181 行  astockv2/s4_arm.py
-    1320    313 行  astockv2/regime.py
-    1639    271 行  astockv2/verdict.py
+      22    348 行  docs/核心问题诊断与验收结论_20261120.md
+     376    230 行  docs/市场环境分层与入场时机_20261120.md
+     612     44 行  results/verdict/verdict.md
+     662    400 行  astockv2/execution.py
+    1068    291 行  astockv2/control.py
+    1365    206 行  astockv2/s4_arm.py
+    1577    335 行  astockv2/regime.py
+    1918    356 行  astockv2/verdict.py
 
-合计 8 个文件、1846 行、82334 字节源码。
+合计 8 个文件、2210 行、101500 字节源码。
 ====================================================================================================
 FILE: docs/核心问题诊断与验收结论_20261120.md
-LINES: 323  SHA256[:16]: 0dc63dbe534916cf  BYTES: 19249
+LINES: 348  SHA256[:16]: db8f197806da2b2c  BYTES: 20278
 SOURCE: D:\AICode\AStockV2\docs\核心问题诊断与验收结论_20261120.md
 ====================================================================================================
 # 核心问题诊断与验收结论
+
+> **2026-11-24 更正（务必先读）**
+>
+> 本文件的验收结论**仍然成立，但支撑它的那个对照组口径是错的**，中间那层
+> 推理需要换掉。
+>
+> 错在哪：与真实信号直接比较的“同股异日”安慰剂里，有约 15% 的交易其
+> **持仓窗口含住信号自己的行情**——买的是同一波行情的更早位置。这批平均
+> +7.4%，干净桶只有 +0.7%。所以“信号比随机入场差 1%/笔”这个说法里的
+> 1%，几乎全是重叠那批贡献的。
+>
+> 换成干净桶之后：
+>
+> | 检验 | 2026-11-20 口径 | 2026-11-24 干净桶口径 |
+> |---|---|---|
+> | R1 信号 vs 同股随机日 | 差 −1.4%/笔 | 差 −2.2%/笔，区间仍跨 0 |
+> | S4 信号 vs 同股随机日 | 差 −1.1%/笔，显著 | **差 −0.1%/笔，无显著差异** |
+> | S4 在指数中期上行时 | 差约 −1.0%/笔，27/27 显著为负 | **27/27 无显著差异，点估计全为正** |
+>
+> **所以：R1“扣费后没有可重复优势”的结论不变**（换成干净桶后信号仍然
+> 明显更差，只是差一点到显著）；**但“S4 的入场时点在中期上行环境差
+> 1%/笔”这条被推翻**，v1 的中期趋势环境门已撤回拦截。
+>
+> 完整复核见 [安慰剂口径修正与验收结论_20261124.md](安慰剂口径修正与验收结论_20261124.md)。
+
 
 日期: 2026-11-20。数据截止 2026-11-19 收盘。样本: v1 冻结的两席账本
 `results/research/mainwave_path/20261119_validated/` 的 159 笔成交
@@ -349,10 +374,39 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests -q
 
 ====================================================================================================
 FILE: docs/市场环境分层与入场时机_20261120.md
-LINES: 201  SHA256[:16]: dddcf3ce6087f3e6  BYTES: 10383
+LINES: 230  SHA256[:16]: 98de7a258f2ca0e2  BYTES: 12038
 SOURCE: D:\AICode\AStockV2\docs\市场环境分层与入场时机_20261120.md
 ====================================================================================================
 # 市场环境分层与入场时机
+
+> **2026-11-24 更正（务必先读）**
+>
+> 本文件的分层结论**有一半被后续复核推翻**。错的不是环境分层这个方法，是
+> **对照组**。
+>
+> “同股异日”安慰剂是均匀抽样，没有未来信息。但其中约 15% 的交易，其
+> **持仓窗口正好含住那次信号的行情** —— 它买的是同一波行情的更早位置。
+> 实测：窗口含信号的那批平均 **+7.373%**，窗口不含信号的干净桶只有
+> **+0.663%**，真实信号 +0.546%。安慰剂总体基准与信号之间的差距约 **87%**
+> 由重叠那批贡献。
+>
+> 剔除后重算 27 组参数（3 指数 × 3 EMA × 3 回看）：
+>
+> | 环境 | 信号 vs 干净桶 | 信号 vs 全部安慰剂（旧口径） |
+> |---|---|---|
+> | 指数中期上行 | **27/27 无显著差异**，点估计全部为正 | 25/27 显著为负，差值约 −0.6% ~ −0.8% |
+> | 指数中期下行 | 无显著差异 | 方向相反，但只有 3–4 段独立行情 |
+>
+> 所以本文件里“**指数中期上行时 S4 追启动日开盘系统性差约 1%/笔**”这个
+> 结论是**假的**，它等于重叠那批安慰剂的贡献。据此加进 v1 的
+> `index_trend.py` 中期趋势环境门**已于 2026-11-24 撤回拦截**。
+>
+> 保留下来的结论只有一条，而且它反而更有用：**S4 的形态有效，入场时点
+> 偏晚**。同一波行情里，提前约两周进场的对照平均赚 +7.4%，等 +2% 确认日
+> 再追只赚 +0.5%。下一步不是按环境拦单，是改入场时点。
+>
+> 完整复核见 [安慰剂口径修正与验收结论_20261124.md](安慰剂口径修正与验收结论_20261124.md)。
+
 
 日期: 2026-11-20。数据截止 2026-11-19 收盘。
 
@@ -556,45 +610,80 @@ python run_limit_entry.py    # 限价入场实验
 
 ====================================================================================================
 FILE: results/verdict/verdict.md
-LINES: 21  SHA256[:16]: 513b609a6690bed3  BYTES: 1395
+LINES: 44  SHA256[:16]: 8b994a9402cf06aa  BYTES: 3430
 SOURCE: D:\AICode\AStockV2\results\verdict\verdict.md
 ====================================================================================================
 # 验收裁决
 
-**裁决: 不通过**
+## 裁决_R1: 不通过
 
 | 判据 | 差值 | 95% 区间 | 可比交易日 | 通过 | 要求 |
 |---|---:|---|---:|---|---|
-| 主判据: 真实成交 - 同股异日安慰剂 | -1.807% | [-2.997%, -0.661%] | 448 | 否 | 95% 区间下界 > 0 |
-| 次判据: 真实成交 - 同日随机标的安慰剂 | -0.429% | [-1.766%, 0.86%] | 92 | 否 | 95% 区间下界 > 0 |
-| 稳定性: 分年差值为正的年份数 | -2.021% | [nan%, nan%] | 3 | 否 | 至少 2 年为正 (实际 1/3; 2024 -3.87%, 2025 -3.01%, 2026 +0.82%) |
-| 稳健性: 去掉最大赢家后仍优于安慰剂 | -2.001% | [-3.092%, -0.937%] | 448 | 否 | 95% 区间下界 > 0 |
-| 参考: 真实成交 - 同池未选中候选 | -0.811% | [-2.055%, 0.531%] | 226 | 否 | 95% 区间下界 > 0 (参考项, 不参与总裁决) |
-| S4 主判据: S4 信号 - 同股异日安慰剂 | -1.1% | [-1.616%, -0.578%] | 454 | 否 | 95% 区间下界 > 0 |
-| S4 次判据: S4 信号 - 同日随机标的安慰剂 | 0.153% | [-0.241%, 0.573%] | 346 | 否 | 95% 区间下界 > 0 |
+| R1 主判据: 真实成交 - 同股异日安慰剂(干净桶) | -2.234% | [-4.364%, 0.081%] | 420 | 否 | 95% 区间下界 > 0 |
+| R1 参考: 真实成交 - 同股异日安慰剂(窗口含信号行情) | -7.918% | [-11.191%, -4.599%] | 134 | — | 参考项, 不参与总裁决 (这批对照买的是同一波行情的更早位置) |
+| R1 次判据: 真实成交 - 同日随机标的安慰剂 | -1.115% | [-3.02%, 1.095%] | 92 | 否 | 95% 区间下界 > 0 |
+| R1 稳定性: 分年差值为正的年份数 | -3.019% | [nan%, nan%] | 3 | 否 | 至少 2 年为正 (实际 0/3; 2024 -6.76%, 2025 -2.05%, 2026 -0.24%) |
+| R1 稳健性: 去掉最大赢家后仍优于安慰剂 | -2.431% | [-4.579%, -0.062%] | 420 | 否 | 95% 区间下界 > 0 |
+| R1 参考: 真实成交 - 同池未选中候选 | -1.42% | [-3.285%, 0.71%] | 226 | — | 95% 区间下界 > 0 (参考项, 不参与总裁决) |
+| R1 参考: 冻结账本实际盈亏 - 同股异日安慰剂(旧口径) | -2.153% | [-3.513%, -0.904%] | 436 | — | 参考项, 不参与总裁决 (账本成交口径与对照组不同) |
 
-## 口径
+### 口径
 
-- **主判据对照**: 同一只股票、同一年、换一个随机交易日入场
+- **主判据对照**: 同一只股票、同一年、换一个随机交易日入场, 且该笔持仓窗口不含任何真实信号行情 (干净桶)
+- **参考对照**: 同股异日中持仓窗口含真实信号行情的那部分 (买的是同一波行情的更早位置)
 - **次判据对照**: 同一天、从全市场随机抽一只同样能成交的股票
-- **成本**: 双边 30bp + 单边 3bp 滑点
-- **样本**: 2024-2026 冻结账本的 159 笔成交
-- **区间**: 按交易日分块 bootstrap 3000 次, 95%
+- **成本**: 双边 30bp + 单边 3bp 滑点 (买卖两侧都扣)
+- **价格空间**: 复权空间 (ATR 与止损用因果复权价, 涨跌停与限价用原始价)
+- **区间**: 按交易日 20 日循环块 bootstrap 3000 次, 95%
+- **样本**: 2024-2026 冻结账本的 159 笔成交, 用同一套成交模型重跑
+
+## 裁决_S4: 不通过
+
+| 判据 | 差值 | 95% 区间 | 可比交易日 | 通过 | 要求 |
+|---|---:|---|---:|---|---|
+| S4 主判据: 真实成交 - 同股异日安慰剂(干净桶) | -0.911% | [-1.769%, 0.033%] | 437 | 否 | 95% 区间下界 > 0 |
+| S4 参考: 真实成交 - 同股异日安慰剂(窗口含信号行情) | -7.375% | [-8.519%, -6.38%] | 361 | — | 参考项, 不参与总裁决 (这批对照买的是同一波行情的更早位置) |
+| S4 次判据: 真实成交 - 同日随机标的安慰剂 | 0.066% | [-0.549%, 0.638%] | 346 | 否 | 95% 区间下界 > 0 |
+| S4 稳定性: 分年差值为正的年份数 | -0.206% | [nan%, nan%] | 2 | 否 | 至少 2 年为正 (实际 1/2; 2025 -1.50%, 2026 +1.08%) |
+| S4 稳健性: 去掉最大赢家后仍优于安慰剂 | -0.922% | [-1.784%, 0.015%] | 437 | 否 | 95% 区间下界 > 0 |
+
+### 口径
+
+- **主判据对照**: 同一只股票、同一年、换一个随机交易日入场, 且该笔持仓窗口不含任何真实信号行情 (干净桶)
+- **参考对照**: 同股异日中持仓窗口含真实信号行情的那部分 (买的是同一波行情的更早位置)
+- **次判据对照**: 同一天、从全市场随机抽一只同样能成交的股票
+- **成本**: 双边 30bp + 单边 3bp 滑点 (买卖两侧都扣)
+- **价格空间**: 复权空间 (ATR 与止损用因果复权价, 涨跌停与限价用原始价)
+- **区间**: 按交易日 20 日循环块 bootstrap 3000 次, 95%
+
+**总裁决: 不通过**
 
 ====================================================================================================
 FILE: astockv2/execution.py
-LINES: 283  SHA256[:16]: 90e87d71d8146251  BYTES: 11531
+LINES: 400  SHA256[:16]: 2c61b206c974fa95  BYTES: 17158
 SOURCE: D:\AICode\AStockV2\astockv2\execution.py
 ====================================================================================================
 """统一的成交与退出模型。
 
 v1 的研究撮合 (research/route_followup.py:simulate) 已经处理了 T+1、
-涨跌停锁死、退出受阻和分批止盈, 但有两处已知缺陷:
-  1. 完全没有滑点, 五个 harness 都没有这个参数;
-  2. 分批止盈按 max(开盘价, 目标价) 成交, 默认盘中穿过目标位就能成交,
-     不扣滑点, 也不模拟跳空穿过。
+涨跌停锁死、退出受阻和分批止盈, 但有几处已知缺陷:
+
+  1. 完全没有滑点;
+  2. 分批止盈按 max(开盘价, 目标价) 成交, 不扣滑点, 也不模拟跳空穿过;
+  3. 用的是未复权价: 除权除息日的价格跳空会被当成真实跳空, ATR 与止损
+     都会被算错;
+  4. 持仓到期遇到跌停锁死时, 这笔交易会被整笔丢掉 (而不是顺延到能成交的
+     那天), 等于把卖不掉的亏损单从样本里删掉。
+
 这里把模型抽成一份可参数化的实现, 让退出规则实验和对照组实验共用同一套
 成交假设, 避免两个实验的差异其实来自成交口径。
+
+价格空间的两套口径 (重要):
+  * 原始价 (raw): 涨跌停价、限价单、交易所口径的一切, 都用原始价;
+  * 复权空间 (adjusted): ATR、止损位、止盈位, 用因果复权价, 避免除权
+    日的假跳空。ExitParams.use_adjusted 决定用哪一套。
+原始价上的 atr20 / low10 / high20_prev 保持不变, 因为 exit_lab 的基线
+对账必须与 v1 用同一套价格。
 """
 from __future__ import annotations
 
@@ -618,10 +707,11 @@ def limit_pct(symbol: str, is_st: bool = False) -> float:
 
 
 def with_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """补上 ATR20 与 10 日最低价。
+    """补上因果复权价、ATR20 与 10 日最低价。
 
-    ATR20 定义与 v1 一致 (mainwave_engine/phase_events.py:85):
-    true_range.shift(1).rolling(20, min_periods=15).mean()
+    复权序列用 pct_chg (缺失时用 close/preclose-1) 累乘, 以第一根收盘价为
+    基准, 因此 adj_close[i]/adj_close[i-1] 恒等于当日真实涨跌幅, 除权日
+    不会留下价格断层。原始价上的 atr20 / low10 / high20_prev 语义不变。
     """
     out = df.copy()
     prev_close = out['close'].shift(1)
@@ -634,13 +724,48 @@ def with_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out['low10'] = out['low'].rolling(10, min_periods=5).min()
     out['high20_prev'] = out['high'].shift(1).rolling(20, min_periods=15).max()
     out['preclose_calc'] = prev_close
+
+    close = pd.to_numeric(out['close'], errors='coerce')
+    open_ = pd.to_numeric(out['open'], errors='coerce')
+    high = pd.to_numeric(out['high'], errors='coerce')
+    low = pd.to_numeric(out['low'], errors='coerce')
+    if 'preclose' in out.columns:
+        pre = pd.to_numeric(out['preclose'], errors='coerce')
+    else:
+        pre = close.shift(1)
+    if 'pct_chg' in out.columns:
+        ret = pd.to_numeric(out['pct_chg'], errors='coerce') / 100.0
+    else:
+        ret = pd.Series(float('nan'), index=out.index)
+    fallback = (close / pre - 1.0).where(pre > 0)
+    ret = ret.fillna(fallback).fillna(0.0).clip(-0.95, 3.0)
+    if len(ret):
+        ret = ret.copy()
+        ret.iloc[0] = 0.0          # 第一根没有前一日, 不计入
+    base = float(close.iloc[0]) if len(close) and close.iloc[0] == close.iloc[0] else 1.0
+    adj_close = base * (1.0 + ret).cumprod()
+    scale = adj_close / close.replace(0, float('nan'))
+    out['adj_scale'] = scale
+    out['adj_close'] = adj_close
+    out['adj_open'] = open_ * scale
+    out['adj_high'] = high * scale
+    out['adj_low'] = low * scale
+
+    adj_prev = out['adj_close'].shift(1)
+    tr_adj = pd.concat([
+        out['adj_high'] - out['adj_low'],
+        (out['adj_high'] - adj_prev).abs(),
+        (out['adj_low'] - adj_prev).abs(),
+    ], axis=1).max(axis=1)
+    out['atr20_adj'] = tr_adj.shift(1).rolling(20, min_periods=15).mean()
+    out['low10_adj'] = out['adj_low'].rolling(10, min_periods=5).min()
+    out['high20_prev_adj'] = out['adj_high'].shift(1).rolling(20, min_periods=15).max()
     return out
 
 
 @dataclass
 class ExitParams:
-    '''退出规则参数。默认值即 v1 的 structure36_20 口径。'''
-
+    '''退出规则参数。默认启用复权空间与双边滑点。'''
     stop_atr: float = 2.0          # 初始止损距离 (ATR)
     stop_source: str = 'ledger'    # ledger 用账本冻结的止损; atr 用 stop_atr 重算
     stop_on_close: bool = False    # True 时止损按收盘价判定, 不按盘中最低价
@@ -649,10 +774,13 @@ class ExitParams:
     trail_atr: float = 2.5         # trail='atr' 时的回撤距离
     activate_atr: float = 2.0      # 浮盈达到多少 ATR 后启动移动止损
     targets: tuple = ((3.0, 0.5), (6.0, 0.25))   # (目标 ATR 倍数, 减仓比例)
+    targets_pct: tuple = ()        # ((涨幅, 减仓比例), ...) 固定百分比止盈
+    stop_pct: float = 0.0          # >0 时用固定百分比止损, 优先于 ATR 止损
     horizon: int = 20              # 持仓根数上限
     cost_bp: float = 30.0          # 双边总成本
     slippage_bp: float = 3.0       # 单边滑点, 在成交价上直接扣
     fill_target_at_open: bool = False  # True 时盘中穿越目标价按开盘价保守成交
+    use_adjusted: bool = True      # False 时用原始价 (对账 v1 旧账本时用)
 
 
 def _slip(price: float, slippage_bp: float, side: str) -> float:
@@ -660,19 +788,47 @@ def _slip(price: float, slippage_bp: float, side: str) -> float:
     return price - adj if side == 'sell' else price + adj
 
 
+def _st_flag(row) -> float:
+    v = float(row.get('isST', 0) or 0)
+    return 0.0 if v != v else v
+
+
+def _limit_pct_of(bars: pd.DataFrame, j: int) -> float:
+    if 'limit_pct' in bars.columns:
+        return float(bars['limit_pct'].iloc[j])
+    return float(bars.attrs.get('limit_pct', LIMIT_MAIN))
+
+
 def simulate_exit(bars: pd.DataFrame, entry_idx: int, entry_price: float,
                   initial_stop: float, params: ExitParams,
                   atr0: float) -> dict:
-    '''在一根已含指标的火线标的上模拟退出。
+    '''退出撮合: 双边滑点、区分开盘跌停与全天封死、停牌不成交、到期顺延。
 
     口径与 v1 research/route_followup.py:simulate 的 structure36_20 分支一致:
     - T+1: 入场当日触及止损只能挂到次日开盘;
     - 跌停锁死时不能卖, 顺延到下一个能成交的开盘;
     - 分批止盈按目标价成交, 叠加滑点;
     - 移动止损在当日收盘后更新, 次日才生效。
+
+    与 v1 的差别 (都是修正, 不是放宽):
+    - 买侧也扣滑点;
+    - 到期日封死跌停不再整笔丢弃, 顺延到能成交那天;
+    - 停牌日不成交, 顺延;
+    - 默认在复权空间计算 ATR 与止损。
     '''
     n = len(bars)
     end = min(entry_idx + params.horizon - 1, n - 1)
+    # 数据不够走完整个持仓周期: 这笔的持有期被截断, 与跑满周期的交易不可比
+    data_truncated = bool(entry_idx + params.horizon - 1 > n - 1)
+    use_adj = params.use_adjusted and 'adj_open' in bars.columns
+    if use_adj:
+        col_o, col_h, col_l, col_c = 'adj_open', 'adj_high', 'adj_low', 'adj_close'
+        col_low10 = 'low10_adj'
+    else:
+        col_o, col_h, col_l, col_c = 'open', 'high', 'low', 'close'
+        col_low10 = 'low10'
+
+    buy_cost = _slip(float(entry_price), params.slippage_bp, 'buy')
     stop = float(initial_stop)
     remaining = 1.0
     cash = 0.0
@@ -681,78 +837,103 @@ def simulate_exit(bars: pd.DataFrame, entry_idx: int, entry_price: float,
     activated = False
     pending = False
     pending_exit = ''
-    targets = list(params.targets)
+    targets = []
+    for atr_mult, weight in params.targets:
+        targets.append((entry_price + atr_mult * atr0, weight))
+    for pct, weight in params.targets_pct:
+        targets.append((entry_price * (1.0 + pct), weight))
     reason = ''
     exit_idx = None
     exit_price = float('nan')
-    for j in range(entry_idx, end + 1):
-        op = float(bars['open'].iloc[j])
-        hi = float(bars['high'].iloc[j])
-        lo = float(bars['low'].iloc[j])
-        cl = float(bars['close'].iloc[j])
-        pre = float(bars['preclose'].iloc[j]) if j > 0 else op
-        lim = (float(bars['limit_pct'].iloc[j])
-               if 'limit_pct' in bars.columns
-               else bars.attrs.get('limit_pct', 0.10))
+
+    for j in range(entry_idx, n):
+        if j > end and not (pending or pending_exit):
+            break
+        # 停牌或无成交量的日子不能成交
+        tradable = (int(bars['tradestatus'].iloc[j]) == 1
+                    and float(bars['volume'].iloc[j]) > 0)
+        if not tradable:
+            if j >= end and remaining > 1e-10:
+                pending_exit = pending_exit or 'HORIZON_DEFERRED'
+            continue
+
+        op = float(bars[col_o].iloc[j])
+        hi = float(bars[col_h].iloc[j])
+        lo = float(bars[col_l].iloc[j])
+        cl = float(bars[col_c].iloc[j])
+        raw_op = float(bars['open'].iloc[j])
+        raw_hi = float(bars['high'].iloc[j])
+        pre = float(bars['preclose'].iloc[j]) if j > 0 else raw_op
+        lim = _limit_pct_of(bars, j)
         lower = math.floor(pre * (1 - lim) * 100 + .5) / 100
-        locked = (hi <= lower + .001) or (op <= lower + .001)
+        open_locked = raw_op <= lower + .001      # 开盘即跌停, 开盘卖不掉
+        day_locked = raw_hi <= lower + .001       # 全天封死跌停 (蕴含 open_locked)
         fill = float('nan')
         breach = (cl <= stop) if params.stop_on_close else (lo <= stop)
+
+        # 持仓期最高/最低, 含离场当根
+        peak = max(peak, hi)
+        trough = min(trough, lo)
+
         if j == entry_idx:
             if breach:
-                pending = True
-        elif pending and not locked:
+                pending = True                    # T+1, 当日不能卖
+        elif pending and not open_locked:
             reason, fill = 'DEFERRED_STOP', op
-        elif pending_exit and not locked:
+        elif pending_exit and not open_locked:
             reason, fill = pending_exit, op
         elif breach:
-            if locked:
-                pending = True
+            if day_locked:
+                pending = True                    # 封死跌停, 顺延
             else:
                 reason = 'INITIAL_STOP' if stop == initial_stop else 'TRAIL_STOP'
                 fill = min(op, stop) if not params.stop_on_close else cl
+
         if reason:
             fill = _slip(fill, params.slippage_bp, 'sell')
-            cash += remaining * fill / entry_price
+            cash += remaining * fill / buy_cost
             remaining = 0.0
             exit_idx, exit_price = j, fill
-        elif j > entry_idx and not locked:
-            for target_atr, weight in list(targets):
+        elif j > entry_idx and not day_locked:
+            for level, weight in list(targets):
                 if remaining <= 1e-10:
                     break
-                target = entry_price + target_atr * atr0
-                if hi >= target:
-                    px = op if params.fill_target_at_open else max(op, target)
+                if hi >= level:
+                    px = op if params.fill_target_at_open else max(op, level)
                     px = _slip(px, params.slippage_bp, 'sell')
-                    cash += weight * px / entry_price
+                    cash += weight * px / buy_cost
                     remaining -= weight
-                    targets.remove((target_atr, weight))
+                    targets.remove((level, weight))
+
         if remaining > 1e-10 and j == end:
-            if locked:
-                pending_exit = 'HORIZON_DEFERRED'
-                continue
-            fill = _slip(cl, params.slippage_bp, 'sell')
-            cash += remaining * fill / entry_price
-            remaining = 0.0
-            reason = 'HORIZON'
-            exit_idx, exit_price = j, fill
+            if day_locked:
+                pending_exit = pending_exit or 'HORIZON_DEFERRED'
+            else:
+                fill = _slip(cl, params.slippage_bp, 'sell')
+                cash += remaining * fill / buy_cost
+                remaining = 0.0
+                reason = 'HORIZON'
+                exit_idx, exit_price = j, fill
+
         if remaining <= 1e-10:
             break
-        peak = max(peak, hi)
-        trough = min(trough, lo)
+
         activated = activated or peak >= entry_price + params.activate_atr * atr0
         if activated:
             if params.trail == 'low10':
-                lv = bars['low10'].iloc[j]
+                lv = bars[col_low10].iloc[j]
                 if lv == lv:
                     stop = max(stop, float(lv))
             elif params.trail == 'atr':
                 stop = max(stop, peak - params.trail_atr * atr0)
+
     if remaining > 1e-10:
+        # 数据不够走完持仓周期, 这笔无法评估, 记 OPEN 由调用方显式处理
         return {'status': 'OPEN', 'reason': '', 'exit_idx': None,
                 'exit_price': float('nan'), 'gross_ret': 0.0, 'net_ret': 0.0,
                 'mfe': peak / entry_price - 1.0, 'mae': trough / entry_price - 1.0,
-                'bars_held': 0}
+                'bars_held': 0, 'deferred': bool(pending_exit),
+                'data_truncated': data_truncated}
     gross = cash - 1.0
     net = gross - params.cost_bp / 10000.0
     den = entry_price - (float(initial_stop))
@@ -768,6 +949,8 @@ def simulate_exit(bars: pd.DataFrame, entry_idx: int, entry_price: float,
         'mfe': peak / entry_price - 1.0,
         'mae': trough / entry_price - 1.0,
         'bars_held': int(exit_idx - entry_idx + 1),
+        'deferred': reason == 'HORIZON_DEFERRED',
+        'data_truncated': data_truncated,
     }
 
 
@@ -776,7 +959,7 @@ def simulate_entry(bars: pd.DataFrame, signal_idx: int, params: ExitParams,
     '''次日开盘入场判定, 口径与 v1 research/route_followup.py:simulate 一致。
 
     不成交的情形: 无次日交易数据、停牌、ST、开盘涨停、跳空超过 1 ATR、
-    开盘已跌破结构止损位。
+    开盘已跌破结构止损位。跳空与止损用复权空间判定, 避免除权日的假跳空。
     '''
     entry_idx = signal_idx + 1
     if entry_idx >= len(bars):
@@ -785,23 +968,25 @@ def simulate_entry(bars: pd.DataFrame, signal_idx: int, params: ExitParams,
     prev = bars.iloc[signal_idx]
     if int(row['tradestatus']) != 1 or float(row['volume']) <= 0:
         return {'status': 'ENTRY_SUSPENDED'}
-    if float(row.get('isST', 0) or 0) != 0:
+    if _st_flag(row) != 0:
         return {'status': 'ENTRY_ST'}
-    atr0 = float(bars['atr20'].iloc[signal_idx])
+    use_adj = params.use_adjusted and 'adj_open' in bars.columns
+    atr0 = float(bars['atr20_adj' if use_adj else 'atr20'].iloc[signal_idx])
     if not atr0 or atr0 != atr0 or atr0 <= 0:
         return {'status': 'INVALID_ATR'}
-    price = float(row['open'])
-    lim = (float(row['limit_pct'])
-           if 'limit_pct' in bars.columns
-           else bars.attrs.get('limit_pct', 0.10))
+    raw_open = float(row['open'])
+    lim = _limit_pct_of(bars, entry_idx)
     pre = float(row['preclose']) if row['preclose'] == row['preclose'] else float(prev['close'])
     upper = math.floor(pre * (1 + lim) * 100 + .5) / 100
-    if price >= upper - 0.001:
+    if raw_open >= upper - 0.001:
         return {'status': 'ENTRY_LIMIT_UP'}
-    signal_close = float(prev['close'])
+    price = float(row['adj_open']) if use_adj else raw_open
+    signal_close = float(prev['adj_close']) if use_adj else float(prev['close'])
     if price - signal_close > atr0:
         return {'status': 'ENTRY_GAP'}
     initial_stop = price - params.stop_atr * atr0
+    if params.stop_pct and params.stop_pct > 0:
+        initial_stop = price * (1.0 - params.stop_pct)
     if structure_stop is not None:
         initial_stop = max(initial_stop, float(structure_stop))
     if price <= initial_stop:
@@ -820,39 +1005,48 @@ def simulate_entry(bars: pd.DataFrame, signal_idx: int, params: ExitParams,
 def simulate_entry_limit(bars: pd.DataFrame, signal_idx: int, params: ExitParams,
                          max_chase: float = 0.0, wait_bars: int = 5,
                          structure_stop=None) -> dict:
-    '''限价入场: 不高于信号日收盘才买, 最多等 wait_bars 根。
+    '''真限价挂单: 不高于信号日收盘才买, 最多等 wait_bars 根。
 
     这是"不追高"的可执行版本。信号日收盘价是决策时已知的价格, 挂一个
     不高于它的限价单在真实盘口里是能做到的。
 
+    限价按原始价挂 (交易所口径), 因此:
+    - 开盘价 <= 限价 -> 按开盘价成交 (比限价更好);
+    - 盘中最低价触及限价 -> 按限价成交;
+    - 一字涨停全天没有低于涨停价的成交 -> 不成交。
     max_chase=0 表示买价不得高于信号日收盘; wait_bars=0 表示次日不满足
     就直接放弃。
     '''
     n = len(bars)
-    signal_close = float(bars['close'].iloc[signal_idx])
-    limit_price = signal_close * (1.0 + max_chase)
+    raw_signal_close = float(bars['close'].iloc[signal_idx])
+    limit_raw = raw_signal_close * (1.0 + max_chase)
     last = min(signal_idx + 1 + wait_bars, n - 1)
     for j in range(signal_idx + 1, last + 1):
         row = bars.iloc[j]
         if int(row['tradestatus']) != 1 or float(row['volume']) <= 0:
             continue
-        if float(row.get('isST', 0) or 0) != 0:
+        if _st_flag(row) != 0:
             continue
-        price = float(row['open'])
-        if price > limit_price:
-            continue
-        lim = (float(row['limit_pct'])
-               if 'limit_pct' in bars.columns
-               else bars.attrs.get('limit_pct', 0.10))
+        raw_open = float(row['open'])
+        raw_low = float(row['low'])
+        lim = _limit_pct_of(bars, j)
         pre = float(row['preclose']) if row['preclose'] == row['preclose'] else float(bars['close'].iloc[j - 1])
         upper = math.floor(pre * (1 + lim) * 100 + .5) / 100
-        if price >= upper - 0.001:
+        if raw_low >= upper - 0.001:
+            continue                      # 一字涨停, 全天没有低于涨停价的成交
+        if raw_open <= limit_raw:
+            if raw_open >= upper - 0.001:
+                continue                  # 开盘涨停, 挂单排不上
+            fill_raw = raw_open
+        elif raw_low <= limit_raw:
+            fill_raw = limit_raw
+        else:
             continue
-        atr0 = float(bars['atr20'].iloc[j - 1])
+        use_adj = params.use_adjusted and 'adj_open' in bars.columns
+        atr0 = float(bars['atr20_adj' if use_adj else 'atr20'].iloc[j - 1])
         if not atr0 or atr0 != atr0 or atr0 <= 0:
             continue
-        if j - signal_idx > 1 and price - float(bars['close'].iloc[j - 1]) > atr0:
-            continue
+        price = fill_raw * float(bars['adj_scale'].iloc[j]) if use_adj else fill_raw
         initial_stop = price - params.stop_atr * atr0
         if structure_stop is not None:
             initial_stop = max(initial_stop, float(structure_stop))
@@ -872,7 +1066,7 @@ def simulate_entry_limit(bars: pd.DataFrame, signal_idx: int, params: ExitParams
 
 ====================================================================================================
 FILE: astockv2/control.py
-LINES: 253  SHA256[:16]: 2c8715768fcb301e  BYTES: 9526
+LINES: 291  SHA256[:16]: 07f31178927d6626  BYTES: 11541
 SOURCE: D:\AICode\AStockV2\astockv2\control.py
 ====================================================================================================
 """安慰剂对照实验: 信号到底有没有价值。
@@ -901,6 +1095,9 @@ from .execution import ExitParams, simulate_entry, simulate_exit
 
 UNIVERSE_RE = r'^(sh_(?:60|68)|sz_(?:00|30))\d{4}_daily\.csv$'
 
+# 运行期统计: 被丢掉的交易数与原因
+STATS = {'truncated': 0}
+
 
 def universe() -> list:
     '''与 v1 route_scan 相同的股票域: 沪深主板/创业板/科创板。'''
@@ -923,8 +1120,19 @@ def liquid_enough(bars: pd.DataFrame, idx: int) -> bool:
     return float(amt.median()) >= 3e7
 
 
-def run_entry(bars: pd.DataFrame, signal_idx: int, params: ExitParams):
-    '''按统一入场规则尝试一笔, 成交则返回退出模拟结果。'''
+def run_entry(bars: pd.DataFrame, signal_idx: int, params: ExitParams,
+              source_idx: int | None = None):
+    '''按统一入场规则尝试一笔, 成交则返回退出模拟结果。
+
+    source_idx 是这笔交易所对照的那次真实信号在 bars 里的下标 (安慰剂臂用)。
+    有了它就能标出"这笔安慰剂的持仓窗口里含不含那次信号的行情":
+    含 -> 这笔安慰剂买的就是同一波行情, 只是买得更早 (OVERLAP),
+    不含 -> 才是这只股票普通某一天的干净基准 (CLEAN)。
+    这个标记是后续裁决口径的关键, 抽样本身不做任何未来信息的筛选。
+
+    数据不够走完整个持仓周期的交易会被丢掉 (记在 STATS 里), 因为持有期被
+    截断的交易和跑满周期的交易不可比, 信号臂与安慰剂臂必须同一把尺子。
+    '''
     if signal_idx < 21 or signal_idx >= len(bars) - 1:
         return None
     if not liquid_enough(bars, signal_idx):
@@ -936,8 +1144,21 @@ def run_entry(bars: pd.DataFrame, signal_idx: int, params: ExitParams):
                         e['initial_stop'], params, e['atr0'])
     if res['status'] != 'CLOSED':
         return None
+    if res.get('data_truncated'):
+        STATS['truncated'] += 1
+        return None
     res['entry_date'] = e['entry_date']
     res['entry_price'] = e['entry_price']
+    res['entry_idx'] = e['entry_idx']
+    if source_idx is None:
+        res['source_signal_day'] = str(bars['date'].iloc[signal_idx].date())
+        res['days_before_signal'] = 0
+        res['overlaps_source_signal'] = False
+    else:
+        res['source_signal_day'] = str(bars['date'].iloc[source_idx].date())
+        res['days_before_signal'] = int(source_idx - signal_idx)
+        res['overlaps_source_signal'] = bool(
+            e['entry_idx'] <= source_idx <= int(res['exit_idx']))
     return res
 
 
@@ -984,7 +1205,7 @@ def control_same_stock(trades: pd.DataFrame, params: ExitParams,
         for ci in rng.sample(days, min(k, len(days))):
             if abs(ci - si) < 3:
                 continue
-            res = run_entry(b, ci, params)
+            res = run_entry(b, ci, params, source_idx=si)
             if res:
                 res.update({'arm': 'C2_同股异日', 'anchor': r.symbol,
                             'anchor_day': str(b['date'].iloc[ci].date()),
@@ -1079,6 +1300,7 @@ def main() -> None:
     print(f'C2 同股异日: {len(c2)} 笔')
     c3 = arm_not_selected(Path(args.ledger_dir), params)
     print(f'C3 同池未选中: {len(c3)} 笔')
+    print(f'因持仓期被数据截断而丢弃: {STATS["truncated"]} 笔')
     print()
 
     arms = {'T0_真实信号': t0, 'C1_同日随机': c1, 'C2_同股异日': c2,
@@ -1086,9 +1308,19 @@ def main() -> None:
     print('=== 安慰剂对照 ===')
     print(summarize_arms(arms).to_string(index=False))
     print()
+    from .verdict import block_boot, split_overlap
+    clean, overlap = split_overlap(c2)
+    if len(c2) and 'overlaps_source_signal' in c2.columns:
+        print(f'C2 拆桶: 干净桶 {len(clean)} 笔 {clean["net_ret"].mean()*100:+.3f}%  |  '
+              f'窗口含信号 {len(overlap)} 笔 {overlap["net_ret"].mean()*100:+.3f}%')
+        print()
     for other in ('C1_同日随机', 'C2_同股异日', 'C3_同池未选中'):
-        obs, lo, hi = boot_diff(t0, arms[other])
+        obs, lo, hi, _ = block_boot(t0, arms[other])
         print(f'T0 - {other}: 均值差 {obs*100:+.3f}%  95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]')
+    if len(clean):
+        obs, lo, hi, _ = block_boot(t0, clean)
+        print(f'T0 - C2 干净桶(主判据口径): 均值差 {obs*100:+.3f}%  '
+              f'95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]')
     print()
     for name, df in arms.items():
         df.to_csv(out / f'{name}.csv', index=False, encoding='utf-8-sig')
@@ -1131,7 +1363,7 @@ def arm_not_selected(ledger_dir: Path, params: ExitParams,
 
 ====================================================================================================
 FILE: astockv2/s4_arm.py
-LINES: 181  SHA256[:16]: a5eebc8b105602e6  BYTES: 6960
+LINES: 206  SHA256[:16]: be358f480be91464  BYTES: 8250
 SOURCE: D:\AICode\AStockV2\astockv2\s4_arm.py
 ====================================================================================================
 """S4 模式用同一套仪表盘验收。
@@ -1206,13 +1438,39 @@ def arm_s4_placebo(signals: pd.DataFrame, params: ExitParams, k: int = 3,
         for ci in rng.sample(days, min(k, len(days))):
             if abs(ci - si) < 3:
                 continue
-            res = run_entry(b, ci, params)
+            res = run_entry(b, ci, params, source_idx=si)
             if res:
                 res.update({'arm': 'S4_同股异日', 'symbol': r.symbol,
                             'anchor_day': str(b['date'].iloc[ci].date()),
                             'label': '', 'year': r.year})
                 rows.append(res)
     return pd.DataFrame(rows)
+
+
+def report_arms(tag: str, a: pd.DataFrame, c: pd.DataFrame) -> None:
+    '''信号臂 vs 安慰剂, 安慰剂按"窗口含不含信号行情"拆开。'''
+    from .verdict import block_boot, split_overlap
+    clean, overlap = split_overlap(c)
+    print(f'--- {tag} ---')
+    if len(a):
+        print(f'  信号 {len(a)} 笔, 平均每笔 {a["net_ret"].mean()*100:+.3f}%, '
+              f'胜率 {(a["net_ret"]>0).mean()*100:.1f}%, 平均 {a["net_r"].mean():.3f} R')
+    for name, df in (('干净桶 CLEAN', clean),
+                     ('窗口含信号 OVERLAP', overlap),
+                     ('全部安慰剂', c)):
+        if not len(df):
+            continue
+        print(f'  安慰剂[{name}] {len(df)} 笔, 平均每笔 {df["net_ret"].mean()*100:+.3f}%, '
+              f'胜率 {(df["net_ret"]>0).mean()*100:.1f}%')
+        if len(a) and len(df) >= 20:
+            a2 = a.copy()
+            a2['ret_pct'] = a2['net_ret']
+            b2 = df.copy()
+            b2['ret_pct'] = b2['net_ret']
+            obs, lo, hi, days = block_boot(a2, b2)
+            print(f'    信号 - {name}: {obs*100:+.3f}%  '
+                  f'95%[{lo*100:+.3f}%, {hi*100:+.3f}%]  可比交易日 {days}')
+    print()
 
 
 def main() -> None:
@@ -1227,6 +1485,11 @@ def main() -> None:
     params = ExitParams(stop_atr=2.0, trail='low10', activate_atr=2.0,
                          targets=((3.0, 0.5), (6.0, 0.25)), horizon=20,
                          cost_bp=30.0, slippage_bp=3.0)
+
+    # S4 原装退出: -10% 止损, +10%/+20% 各卖 1/3, 剩余 1/3 持有到 60 日上限
+    lad = ExitParams(stop_pct=0.10, trail='none', activate_atr=2.0,
+                     targets=(), targets_pct=((0.10, 1.0/3), (0.20, 1.0/3)),
+                     horizon=60, cost_bp=30.0, slippage_bp=3.0)
 
     sig = load_signals()
     if args.sample:
@@ -1253,23 +1516,8 @@ def main() -> None:
             print()
             print('=== 触达标签 vs 实际盈亏 ===')
             print(g[['size', '胜率%', '平均%']].to_string())
-    if len(c):
-        print()
-        print('=== S4 同股异日对照 ===')
-        print(f"平均每笔 {c['net_ret'].mean()*100:.3f}%  胜率 {(c['net_ret']>0).mean()*100:.1f}%  "
-              f"平均 {c['net_r'].mean():.3f} R  笔数 {len(c)}")
+    report_arms('S4 走 R1 的 structure36_20 退出', a, c)
 
-    if len(a) and len(c):
-        from .verdict import block_boot
-        a2 = a.copy()
-        a2['ret_pct'] = a2['net_ret']
-        c2 = c.copy()
-        c2['ret_pct'] = c2['net_ret']
-        obs, lo, hi, days = block_boot(a2, c2)
-        print()
-        print(f'S4 信号 - 同股异日: 差值 {obs*100:+.3f}%  '
-              f'95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]  可比交易日 {days}')
-        print('主判据 (区间下界 > 0): ' + ('通过' if lo > 0 else '不通过'))
     if len(a) and len(d):
         from .verdict import block_boot
         a2 = a.copy()
@@ -1279,10 +1527,19 @@ def main() -> None:
         obs, lo, hi, days = block_boot(a2, d2)
         print(f'S4 信号 - 同日随机标的: 差值 {obs*100:+.3f}%  '
               f'95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]  可比交易日 {days}')
+        print()
+
+    print('=== S4 原装 S4_LAD 退出 (-10% 止损, +10%/+20% 各卖 1/3, 60 日上限) ===')
+    la = arm_s4(sig, lad)
+    lc = arm_s4_placebo(sig, lad, args.k)
+    print(f'S4 信号 {len(la)} 笔, 同股异日对照 {len(lc)} 笔')
+    report_arms('S4 原装 S4_LAD', la, lc)
 
     a.to_csv(out / 's4_arm.csv', index=False, encoding='utf-8-sig')
     c.to_csv(out / 's4_placebo.csv', index=False, encoding='utf-8-sig')
     d.to_csv(out / 's4_same_day.csv', index=False, encoding='utf-8-sig')
+    la.to_csv(out / 's4_lad_arm.csv', index=False, encoding='utf-8-sig')
+    lc.to_csv(out / 's4_lad_placebo.csv', index=False, encoding='utf-8-sig')
     print()
     print('输出: ' + str(out))
 
@@ -1318,7 +1575,7 @@ def arm_s4_same_day(signals: pd.DataFrame, params: ExitParams, universe: list,
 
 ====================================================================================================
 FILE: astockv2/regime.py
-LINES: 313  SHA256[:16]: 2d6ffdf47347da76  BYTES: 12615
+LINES: 335  SHA256[:16]: 81802857d01555ca  BYTES: 13811
 SOURCE: D:\AICode\AStockV2\astockv2\regime.py
 ====================================================================================================
 """市场环境分层: 核心指数 EMA100 斜率。
@@ -1470,21 +1727,30 @@ def main() -> None:
     print()
 
     arms = {}
+    from .placebo_audit import mark_overlap
     t0 = pd.read_csv(cdir / 'T0_真实信号.csv')
     t0['ret_pct'] = t0['net_ret']
     arms['R1 真实信号 (重建)'] = attach_regime(t0, 'anchor_day', rmap)
-    for nm, f, daycol in (('R1 同日随机标的', 'C1_同日随机.csv', 'anchor_day'),
-                          ('R1 同股异日', 'C2_同股异日.csv', 'entry_date'),
-                          ('R1 同池未选中', 'C3_同池未选中.csv', 'anchor_day')):
+    c2 = pd.read_csv(cdir / 'C2_同股异日.csv')
+    c2['ret_pct'] = c2['net_ret']
+    c2 = mark_overlap(t0, c2)
+    c2_clean = c2[~c2['overlaps_any']]
+    arms['R1 同股异日'] = attach_regime(c2_clean, 'anchor_day', rmap)
+    arms['R1 同股异日·全部(含窗口重叠)'] = attach_regime(c2, 'anchor_day', rmap)
+    for nm, f in (('R1 同日随机标的', 'C1_同日随机.csv'),
+                  ('R1 同池未选中', 'C3_同池未选中.csv')):
         d = pd.read_csv(cdir / f)
         d['ret_pct'] = d['net_ret']
-        arms[nm] = attach_regime(d, daycol, rmap)
+        arms[nm] = attach_regime(d, 'anchor_day', rmap)
     sa = pd.read_csv(sdir / 's4_arm.csv')
     sa['ret_pct'] = sa['net_ret']
     arms['S4 信号'] = attach_regime(sa, 'anchor_day', rmap)
     sp = pd.read_csv(sdir / 's4_placebo.csv')
     sp['ret_pct'] = sp['net_ret']
-    arms['S4 同股异日'] = attach_regime(sp, 'entry_date', rmap)
+    sp = mark_overlap(sa, sp)
+    sp_clean = sp[~sp['overlaps_any']]
+    arms['S4 同股异日'] = attach_regime(sp_clean, 'anchor_day', rmap)
+    arms['S4 同股异日·全部(含窗口重叠)'] = attach_regime(sp, 'anchor_day', rmap)
 
     print('=== 各臂的市场环境构成 ===')
     rows = []
@@ -1511,10 +1777,13 @@ def main() -> None:
     print(by_regime(arms['S4 同股异日']).to_string(index=False))
     print()
     print('=== 剔除环境混杂后的差值 ===')
-    for tag, a, b in (('R1', arms['R1 真实信号 (重建)'], arms['R1 同股异日']),
-                      ('S4', arms['S4 信号'], arms['S4 同股异日'])):
+    print('主判据用干净桶 (安慰剂持仓窗口不含任何信号行情); 旧口径一并列出')
+    for tag, a, b, b_all in (('R1', arms['R1 真实信号 (重建)'], arms['R1 同股异日'],
+                              arms['R1 同股异日·全部(含窗口重叠)']),
+                             ('S4', arms['S4 信号'], arms['S4 同股异日'],
+                              arms['S4 同股异日·全部(含窗口重叠)'])):
         d, detail = standardize(a, b)
-        print(f'--- {tag}: 按真实成交的环境构成加权后的差值 {d*100:+.3f}% ---')
+        print(f'--- {tag}: 按真实成交的环境构成加权后的差值 (干净桶) {d*100:+.3f}% ---')
         print(detail.to_string(index=False))
         print()
         for reg in ('DOWN', 'UP'):
@@ -1525,6 +1794,16 @@ def main() -> None:
                 continue
             obs, lo, hi, days = block_boot(aa, bb)
             print(f'  {reg}: 差值 {obs*100:+.3f}%  95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]  '
+                  f'可比交易日 {days}')
+        print()
+        print(f'  [旧口径参考] {tag} 信号 vs 全部安慰剂 (含窗口重叠):')
+        for reg in ('DOWN', 'UP'):
+            aa = a[a['regime'] == reg]
+            bb = b_all[b_all['regime'] == reg]
+            if len(aa) < 10 or len(bb) < 10:
+                continue
+            obs, lo, hi, days = block_boot(aa, bb)
+            print(f'    {reg}: 差值 {obs*100:+.3f}%  95%区间 [{lo*100:+.3f}%, {hi*100:+.3f}%]  '
                   f'可比交易日 {days}')
         print()
 
@@ -1637,7 +1916,7 @@ def robustness(arms_spec: list, indices: tuple = ('hs300', 'csi1000', 'sse'),
 
 ====================================================================================================
 FILE: astockv2/verdict.py
-LINES: 271  SHA256[:16]: eab593be020d9a43  BYTES: 10675
+LINES: 356  SHA256[:16]: 061a99cff1b657ea  BYTES: 14994
 SOURCE: D:\AICode\AStockV2\astockv2\verdict.py
 ====================================================================================================
 """验收裁决: 把"这个规则到底行不行"变成一个能自动判定的门槛。
@@ -1645,11 +1924,22 @@ SOURCE: D:\AICode\AStockV2\astockv2\verdict.py
 裁决口径在看结果之前写死在这里, 不允许事后改阈值。
 
   主判据: 真实成交的每笔平均收益, 必须显著高于"同一只股票、同一年、
-          换一个随机交易日入场"的安慰剂对照。
-          用按交易日分块的 bootstrap 给 95% 区间, 下界必须大于 0。
+          换一个随机交易日入场"的安慰剂对照, 且 95% 区间下界 > 0。
   次判据: 必须同时高于"同一天换一只随机股票"的对照。
   稳定性: 三个年度里至少两年为正。
   稳健性: 去掉最大赢家之后仍然为正。
+
+两条口径上的修正 (2026-11-24):
+
+1. 对照组按"持仓窗口里含不含那次信号的行情"再拆一次:
+     OVERLAP 窗口里含信号 -> 这笔安慰剂买的就是同一波行情, 只是买得更早;
+     CLEAN   窗口里不含信号 -> 才是这只股票普通某一天的干净基准。
+   主判据用 CLEAN。安慰剂抽样本身是均匀的, 没有未来信息, 但如果把
+   OVERLAP 混进来, 等于允许对照组"提前上车"去拿走信号自己的那段行情,
+   基准会被抬高 (实测 +7.2% vs +0.7%), 裁决就会把"买得早"误判成
+   "信号没用"。
+2. 区间用 20 个交易日的循环块 bootstrap。持仓周期是 20 日, 逐日独立
+   重采样会把重叠的持仓当成独立样本, 区间会偏窄。
 
 任何一条不满足, 裁决就是不通过。系统可以继续跑, 但不得据此扩大发现面
 或切换正式规则。
@@ -1658,6 +1948,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 from pathlib import Path
 
@@ -1668,39 +1959,82 @@ CI_LOW = 0.0        # 主判据: 差值 95% 区间下界必须大于 0
 MIN_POSITIVE_YEARS = 2   # 稳定性: 至少两年为正
 BOOT = 3000
 SEED = 20261120
+BLOCK = 20          # 循环块长度, 与 20 日持仓周期一致
+
+
+def _resolve_col(a: pd.DataFrame, b: pd.DataFrame, col: str) -> str:
+    '''列名兜底: 统一用 ret_pct, 没有就用净收益列 net_ret。'''
+    if col in a.columns and col in b.columns:
+        return col
+    for alt in ('ret_pct', 'net_ret'):
+        if alt in a.columns and alt in b.columns:
+            return alt
+    raise KeyError(f'两臂都没有可用的收益列: {col}')
 
 
 def block_boot(a: pd.DataFrame, b: pd.DataFrame, col: str = 'ret_pct',
                key: str = 'anchor_day', n: int = BOOT,
-               seed: int = SEED) -> tuple:
-    '''按交易日分块 bootstrap 的均值差与 95% 区间。
+               seed: int = SEED, block_size: int = BLOCK) -> tuple:
+    '''20 交易日循环块 bootstrap 的均值差与 95% 区间。
 
-    同一天的多笔交易高度相关, 按日期重采样, 不能把每笔当独立样本。
+    同一天的多笔交易高度相关, 而且 20 日持仓互相重叠, 所以按交易日
+    分块重采样, 不能把每笔当独立样本。
 
     统计量是"两臂整体均值之差"。每次重采样抽一组交易日 (两臂并集),
     再把落在这些日子上的交易各自汇总体重算均值, 这样两臂始终用同一组
     抽样日, 区间和"整体均值差"是同一个量。
     '''
+    col = _resolve_col(a, b, col)
     rng = random.Random(seed)
     va = a.groupby(key)[col].apply(lambda s: [v for v in s if v == v]).to_dict()
     vb = b.groupby(key)[col].apply(lambda s: [v for v in s if v == v]).to_dict()
     days = sorted(set(va) | set(vb))
-    if len(days) < 5:
-        return (float('nan'), float('nan'), float('nan'), len(days))
-    obs = float(a[col].mean()) - float(b[col].mean())
     m = len(days)
+    if m < 5:
+        return (float('nan'), float('nan'), float('nan'), m)
+    obs = float(a[col].mean()) - float(b[col].mean())
+    blk = min(block_size, m)
+    k_blocks = math.ceil(m / blk)
+    # 按天预聚合: 一次重采样只需要把抽到的天的和与个数加起来, 不用重建交易列表
+    sum_a = [sum(va.get(d, ())) for d in days]
+    num_a = [len(va.get(d, ())) for d in days]
+    sum_b = [sum(vb.get(d, ())) for d in days]
+    num_b = [len(vb.get(d, ())) for d in days]
     diffs = []
     for _ in range(n):
-        idx = [days[rng.randrange(m)] for _ in range(m)]
-        sa = [v for d in idx for v in va.get(d, ())]
-        sb = [v for d in idx for v in vb.get(d, ())]
-        if not sa or not sb:
+        tot_a = tot_b = 0.0
+        cnt_a = cnt_b = 0
+        taken = 0
+        for _ in range(k_blocks):
+            start = rng.randrange(m)
+            for offset in range(blk):
+                if taken >= m:
+                    break
+                i = (start + offset) % m
+                tot_a += sum_a[i]
+                cnt_a += num_a[i]
+                tot_b += sum_b[i]
+                cnt_b += num_b[i]
+                taken += 1
+        if not cnt_a or not cnt_b:
             continue
-        diffs.append(sum(sa) / len(sa) - sum(sb) / len(sb))
+        diffs.append(tot_a / cnt_a - tot_b / cnt_b)
     diffs.sort()
     if not diffs:
         return (obs, float('nan'), float('nan'), m)
     return (obs, diffs[int(len(diffs) * 0.025)], diffs[int(len(diffs) * 0.975)], m)
+
+
+def split_overlap(control: pd.DataFrame) -> tuple:
+    '''把安慰剂拆成 (CLEAN, OVERLAP)。
+
+    没有 overlap 标记的旧结果一律当 CLEAN (保守: 不因为缺标记而抬高基准)。
+    '''
+    if 'overlaps_source_signal' not in control.columns:
+        return control, control.iloc[0:0]
+    flag = control['overlaps_source_signal'].astype(str).str.lower().isin(
+        ('true', '1', 'yes'))
+    return control[~flag], control[flag]
 
 
 def yearly_diff(traded: pd.DataFrame, control: pd.DataFrame,
@@ -1715,35 +2049,50 @@ def yearly_diff(traded: pd.DataFrame, control: pd.DataFrame,
     return (a - b).dropna()
 
 
-def judge(traded: pd.DataFrame, ctrl_same_stock: pd.DataFrame,
-          ctrl_same_day: pd.DataFrame) -> dict:
-    '''按预先写死的口径给出裁决。'''
-    checks = []
-    obs, lo, hi, days = block_boot(traded, ctrl_same_stock)
-    checks.append({
-        '项': '主判据: 真实成交 - 同股异日安慰剂',
+def _check(item: str, obs: float, lo: float, hi: float, days: int,
+           require: str, passed: bool | None = None) -> dict:
+    return {
+        '项': item,
         '差值%': round(obs * 100, 3),
         '区间下界%': round(lo * 100, 3),
         '区间上界%': round(hi * 100, 3),
         '可比交易日': days,
-        '通过': bool(lo > CI_LOW),
-        '要求': '95% 区间下界 > 0',
-    })
+        '通过': bool(lo > CI_LOW) if passed is None else bool(passed),
+        '要求': require,
+    }
+
+
+def judge(traded: pd.DataFrame, ctrl_same_stock: pd.DataFrame,
+          ctrl_same_day: pd.DataFrame, label: str = 'R1') -> dict:
+    '''按预先写死的口径给出裁决。
+
+    traded 用同一套成交模型重跑出来的真实信号臂 (T0), 与对照组同口径。
+    '''
+    clean, overlap = split_overlap(ctrl_same_stock)
+    checks = []
+
+    obs, lo, hi, days = block_boot(traded, clean)
+    checks.append(_check(
+        f'{label} 主判据: 真实成交 - 同股异日安慰剂(干净桶)',
+        obs, lo, hi, days, '95% 区间下界 > 0'))
+
+    if len(overlap):
+        obs, lo, hi, days = block_boot(traded, overlap)
+        checks.append(_check(
+            f'{label} 参考: 真实成交 - 同股异日安慰剂(窗口含信号行情)',
+            obs, lo, hi, days,
+            '参考项, 不参与总裁决 (这批对照买的是同一波行情的更早位置)'))
+
     obs2, lo2, hi2, days2 = block_boot(traded, ctrl_same_day)
-    checks.append({
-        '项': '次判据: 真实成交 - 同日随机标的安慰剂',
-        '差值%': round(obs2 * 100, 3),
-        '区间下界%': round(lo2 * 100, 3),
-        '区间上界%': round(hi2 * 100, 3),
-        '可比交易日': days2,
-        '通过': bool(lo2 > CI_LOW),
-        '要求': '95% 区间下界 > 0',
-    })
-    yr = yearly_diff(traded, ctrl_same_stock)
+    checks.append(_check(
+        f'{label} 次判据: 真实成交 - 同日随机标的安慰剂',
+        obs2, lo2, hi2, days2, '95% 区间下界 > 0'))
+
+    yr = yearly_diff(traded, clean)
     pos = int((yr > 0).sum())
     detail = ', '.join(f'{y} {v*100:+.2f}%' for y, v in yr.items())
     checks.append({
-        '项': '稳定性: 分年差值为正的年份数',
+        '项': f'{label} 稳定性: 分年差值为正的年份数',
         '差值%': round(float(yr.mean()) * 100, 3),
         '区间下界%': float('nan'),
         '区间上界%': float('nan'),
@@ -1751,34 +2100,31 @@ def judge(traded: pd.DataFrame, ctrl_same_stock: pd.DataFrame,
         '通过': bool(pos >= MIN_POSITIVE_YEARS),
         '要求': f'至少 {MIN_POSITIVE_YEARS} 年为正 (实际 {pos}/{len(yr)}; {detail})',
     })
+
     t = traded.copy()
     t['ret_ex_top'] = t['ret_pct']
     best = t['ret_pct'].idxmax()
     t.loc[best, 'ret_ex_top'] = float('nan')
-    ex_top = t['ret_ex_top'].mean()
-    ctrl_same_stock = ctrl_same_stock.copy()
-    ctrl_same_stock['ret_ex_top'] = ctrl_same_stock['ret_pct']
-    obs3, lo3, hi3, days3 = block_boot(t, ctrl_same_stock, col='ret_ex_top')
-    checks.append({
-        '项': '稳健性: 去掉最大赢家后仍优于安慰剂',
-        '差值%': round(obs3 * 100, 3),
-        '区间下界%': round(lo3 * 100, 3),
-        '区间上界%': round(hi3 * 100, 3),
-        '可比交易日': days3,
-        '通过': bool(lo3 > CI_LOW),
-        '要求': '95% 区间下界 > 0',
-    })
+    clean2 = clean.copy()
+    clean2['ret_ex_top'] = clean2['ret_pct']
+    obs3, lo3, hi3, days3 = block_boot(t, clean2, col='ret_ex_top')
+    checks.append(_check(
+        f'{label} 稳健性: 去掉最大赢家后仍优于安慰剂',
+        obs3, lo3, hi3, days3, '95% 区间下界 > 0'))
 
-    passed = all(c['通过'] for c in checks)
+    hard = [c for c in checks if not c['项'].startswith(f'{label} 参考')]
+    passed = all(c['通过'] for c in hard)
     return {
         '裁决': '通过' if passed else '不通过',
         '判据': checks,
         '口径': {
-            '主判据对照': '同一只股票、同一年、换一个随机交易日入场',
+            '主判据对照': ('同一只股票、同一年、换一个随机交易日入场, '
+                        '且该笔持仓窗口不含任何真实信号行情 (干净桶)'),
+            '参考对照': '同股异日中持仓窗口含真实信号行情的那部分 (买的是同一波行情的更早位置)',
             '次判据对照': '同一天、从全市场随机抽一只同样能成交的股票',
-            '成本': '双边 30bp + 单边 3bp 滑点',
-            '样本': '2024-2026 冻结账本的 159 笔成交',
-            '区间': f'按交易日分块 bootstrap {BOOT} 次, 95%',
+            '成本': '双边 30bp + 单边 3bp 滑点 (买卖两侧都扣)',
+            '价格空间': '复权空间 (ATR 与止损用因果复权价, 涨跌停与限价用原始价)',
+            '区间': f'按交易日 {BLOCK} 日循环块 bootstrap {BOOT} 次, 95%',
         },
     }
 
@@ -1787,61 +2133,51 @@ def to_markdown(v: dict) -> str:
     lines = []
     lines.append('# 验收裁决')
     lines.append('')
-    lines.append(f"**裁决: {v['裁决']}**")
-    lines.append('')
-    lines.append('| 判据 | 差值 | 95% 区间 | 可比交易日 | 通过 | 要求 |')
-    lines.append('|---|---:|---|---:|---|---|')
-    for c in v['判据']:
-        lines.append(f"| {c['项']} | {c['差值%']}% | [{c['区间下界%']}%, {c['区间上界%']}%] "
-                     f"| {c['可比交易日']} | {'是' if c['通过'] else '否'} | {c['要求']} |")
-    lines.append('')
-    lines.append('## 口径')
-    lines.append('')
-    for k, val in v['口径'].items():
-        lines.append(f'- **{k}**: {val}')
+    for key in ('裁决_R1', '裁决_S4'):
+        if key not in v:
+            continue
+        sub = v[key]
+        lines.append(f"## {key}: {sub['裁决']}")
+        lines.append('')
+        lines.append('| 判据 | 差值 | 95% 区间 | 可比交易日 | 通过 | 要求 |')
+        lines.append('|---|---:|---|---:|---|---|')
+        for c in sub['判据']:
+            is_ref = ' 参考' in c['项']
+            mark = '—' if is_ref else ('是' if c['通过'] else '否')
+            lines.append(f"| {c['项']} | {c['差值%']}% | [{c['区间下界%']}%, {c['区间上界%']}%] "
+                         f"| {c['可比交易日']} | {mark} | {c['要求']} |")
+        lines.append('')
+        lines.append('### 口径')
+        lines.append('')
+        for k, val in sub['口径'].items():
+            lines.append(f'- **{k}**: {val}')
+        lines.append('')
+    lines.append(f"**总裁决: {v.get('总裁决', '')}**")
     lines.append('')
     return '\n'.join(lines)
 
 
-def judge_s4(s4_dir: Path) -> list:
+def judge_s4(s4_dir: Path) -> dict | None:
     '''S4 那一臂的裁决, 前提是已经跑过 run_s4_arm.py。'''
     arm = s4_dir / 's4_arm.csv'
     pbo = s4_dir / 's4_placebo.csv'
     day = s4_dir / 's4_same_day.csv'
     if not (arm.exists() and pbo.exists()):
-        return []
+        return None
     a = pd.read_csv(arm)
     b = pd.read_csv(pbo)
-    out = []
     a2 = a.copy()
     a2['ret_pct'] = a2['net_ret']
     b2 = b.copy()
     b2['ret_pct'] = b2['net_ret']
-    obs, lo, hi, days = block_boot(a2, b2)
-    out.append({
-        '项': 'S4 主判据: S4 信号 - 同股异日安慰剂',
-        '差值%': round(obs * 100, 3),
-        '区间下界%': round(lo * 100, 3),
-        '区间上界%': round(hi * 100, 3),
-        '可比交易日': days,
-        '通过': bool(lo > CI_LOW),
-        '要求': '95% 区间下界 > 0',
-    })
+    ctrl_day = None
     if day.exists():
         c = pd.read_csv(day)
         c2 = c.copy()
         c2['ret_pct'] = c2['net_ret']
-        obs2, lo2, hi2, days2 = block_boot(a2, c2)
-        out.append({
-            '项': 'S4 次判据: S4 信号 - 同日随机标的安慰剂',
-            '差值%': round(obs2 * 100, 3),
-            '区间下界%': round(lo2 * 100, 3),
-            '区间上界%': round(hi2 * 100, 3),
-            '可比交易日': days2,
-            '通过': bool(lo2 > CI_LOW),
-            '要求': '95% 区间下界 > 0',
-        })
-    return out
+        ctrl_day = c2
+    empty = pd.DataFrame({'anchor_day': [], 'ret_pct': []})
+    return judge(a2, b2, ctrl_day if ctrl_day is not None else empty, label='S4')
 
 
 def main() -> None:
@@ -1857,11 +2193,13 @@ def main() -> None:
 
     from .exit_lab import load_trades
     trades = load_trades(Path(args.ledger_dir))
-    t = trades.copy()
-    t['ret_pct'] = t['pnl'] / t['notional']
-    t['anchor_day'] = t['day']
-    t = t[['anchor_day', 'symbol', 'ret_pct', 'pnl', 'notional', 'year', 'arm']]
+    ledger = trades.copy()
+    ledger['ret_pct'] = ledger['pnl'] / ledger['notional']
+    ledger['anchor_day'] = ledger['day']
+    ledger = ledger[['anchor_day', 'symbol', 'ret_pct', 'pnl', 'notional', 'year', 'arm']]
 
+    t0 = pd.read_csv(cdir / 'T0_真实信号.csv')
+    t0['ret_pct'] = t0['net_ret']
     c2 = pd.read_csv(cdir / 'C2_同股异日.csv')
     c1 = pd.read_csv(cdir / 'C1_同日随机.csv')
     for c in (c1, c2):
@@ -1871,16 +2209,24 @@ def main() -> None:
     if len(c3):
         c3['ret_pct'] = c3['net_ret']
 
-    print(f'真实成交 {len(t)} 笔, 平均每笔 {t["ret_pct"].mean()*100:.3f}%')
-    print(f'同股异日对照 {len(c2)} 笔, 平均每笔 {c2["ret_pct"].mean()*100:.3f}%')
-    print(f'同日随机对照 {len(c1)} 笔, 平均每笔 {c1["ret_pct"].mean()*100:.3f}%')
+    print(f'冻结账本 {len(ledger)} 笔, 账本实际每笔 {ledger["ret_pct"].mean()*100:.3f}%')
+    print(f'同口径重跑真实信号 (T0) {len(t0)} 笔, 每笔 {t0["ret_pct"].mean()*100:.3f}%')
+    print(f'同股异日对照 {len(c2)} 笔, 每笔 {c2["ret_pct"].mean()*100:.3f}%')
+    print(f'同日随机对照 {len(c1)} 笔, 每笔 {c1["ret_pct"].mean()*100:.3f}%')
+    if len(c2) and 'overlaps_source_signal' in c2.columns:
+        flag = c2['overlaps_source_signal'].astype(str).str.lower().isin(('true', '1', 'yes'))
+        print(f'  其中窗口含信号行情 (OVERLAP) {int(flag.sum())} 笔, '
+              f'每笔 {c2.loc[flag, "ret_pct"].mean()*100:.3f}%')
+        print(f'  干净桶 (CLEAN) {int((~flag).sum())} 笔, '
+              f'每笔 {c2.loc[~flag, "ret_pct"].mean()*100:.3f}%')
     print()
 
-    v = judge(t, c2, c1)
+    v1 = judge(t0, c2, c1, label='R1')
+    v1['口径']['样本'] = f'2024-2026 冻结账本的 {len(t0)} 笔成交, 用同一套成交模型重跑'
     if len(c3):
-        obs, lo, hi, days_c3 = block_boot(t, c3)
-        v['判据'].append({
-            '项': '参考: 真实成交 - 同池未选中候选',
+        obs, lo, hi, days_c3 = block_boot(t0, c3)
+        v1['判据'].append({
+            '项': 'R1 参考: 真实成交 - 同池未选中候选',
             '差值%': round(obs * 100, 3),
             '区间下界%': round(lo * 100, 3),
             '区间上界%': round(hi * 100, 3),
@@ -1888,24 +2234,42 @@ def main() -> None:
             '通过': bool(lo > CI_LOW),
             '要求': '95% 区间下界 > 0 (参考项, 不参与总裁决)',
         })
-    s4 = judge_s4(Path(args.s4_dir))
-    if s4:
-        v['判据'].extend(s4)
-        hard = [c for c in v['判据'] if not c['项'].startswith('参考')]
-        v['裁决'] = '通过' if all(c['通过'] for c in hard) else '不通过'
-    print('=== 验收裁决 ===')
-    for c in v['判据']:
-        mark = '通过' if c['通过'] else '不通过'
-        print(f"[{mark}] {c['项']}: 差值 {c['差值%']}% "
-              f"区间 [{c['区间下界%']}%, {c['区间上界%']}%] 要求: {c['要求']}")
-    print()
-    print('裁决: ' + v['裁决'])
+    # 口径参考: 冻结账本的实际盈亏 vs 同口径安慰剂
+    obs, lo, hi, days_l = block_boot(ledger, c2)
+    v1['判据'].append({
+        '项': 'R1 参考: 冻结账本实际盈亏 - 同股异日安慰剂(旧口径)',
+        '差值%': round(obs * 100, 3),
+        '区间下界%': round(lo * 100, 3),
+        '区间上界%': round(hi * 100, 3),
+        '可比交易日': days_l,
+        '通过': bool(lo > CI_LOW),
+        '要求': '参考项, 不参与总裁决 (账本成交口径与对照组不同)',
+    })
+
+    v2 = judge_s4(Path(args.s4_dir))
+    out_v = {'裁决_R1': v1}
+    if v2:
+        out_v['裁决_S4'] = v2
+    out_v['总裁决'] = '通过' if all(
+        out_v[k]['裁决'] == '通过' for k in ('裁决_R1', '裁决_S4') if k in out_v) else '不通过'
+
+    for key in ('裁决_R1', '裁决_S4'):
+        if key not in out_v:
+            continue
+        print(f'=== {key}: {out_v[key]["裁决"]} ===')
+        for c in out_v[key]['判据']:
+            is_ref = ' 参考' in c['项']
+            mark = '参考' if is_ref else ('通过' if c['通过'] else '不通过')
+            print(f"[{mark}] {c['项']}: 差值 {c['差值%']}% "
+                  f"区间 [{c['区间下界%']}%, {c['区间上界%']}%] 要求: {c['要求']}")
+        print()
+    print('总裁决: ' + out_v['总裁决'])
     print()
 
-    (out / 'verdict.json').write_text(json.dumps(v, ensure_ascii=False, indent=2),
+    (out / 'verdict.json').write_text(json.dumps(out_v, ensure_ascii=False, indent=2),
                                        encoding='utf-8')
-    (out / 'verdict.md').write_text(to_markdown(v), encoding='utf-8')
-    t.to_csv(out / 'traded_arm.csv', index=False, encoding='utf-8-sig')
+    (out / 'verdict.md').write_text(to_markdown(out_v), encoding='utf-8')
+    t0.to_csv(out / 'traded_arm.csv', index=False, encoding='utf-8-sig')
     print('输出: ' + str(out))
 
 
